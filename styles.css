@@ -1403,6 +1403,23 @@
       transform: scale(1.15);
     }
 
+    .color-custom {
+      position: relative;
+      display: inline-block;
+      overflow: hidden;
+    }
+
+    .color-custom-input {
+      position: absolute;
+      inset: -4px;
+      width: calc(100% + 8px);
+      height: calc(100% + 8px);
+      padding: 0;
+      border: none;
+      opacity: 0;
+      cursor: pointer;
+    }
+
     /* ── KML diff section ── */
     #kml-diff-section {
       padding: 9px 13px;
