@@ -123,7 +123,123 @@ function _nnSort(pts) {
   return sorted;
 }
 
-// ── Douglas-Peucker 路徑簡化：依原始走訪順序保留轉角形狀，只去除多餘密集點 ──
+// ── 局部公尺換算：以點集平均緯度換算經緯度→公尺的比例尺，讓距離計算不失真 ──
+function _localMeterScale(pts) {
+  let sumLat = 0; pts.forEach(p => sumLat += p[1]);
+  const meanLat = sumLat / pts.length;
+  return { mLat: 110574, mLng: 111320 * Math.cos(meanLat * Math.PI / 180) };
+}
+
+// ── 網格降採樣：以固定公尺網格取中心點，合併密集/重複測量、消除側向雜訊 ──
+function _gridDownsampleM(ptsM, cellM) {
+  const buckets = new Map();
+  ptsM.forEach(p => {
+    const key = Math.floor(p[0] / cellM) + '_' + Math.floor(p[1] / cellM);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(p);
+  });
+  const out = [];
+  buckets.forEach(arr => {
+    let sx = 0, sy = 0;
+    arr.forEach(p => { sx += p[0]; sy += p[1]; });
+    out.push([sx / arr.length, sy / arr.length]);
+  });
+  return out;
+}
+
+// ── 建 k 近鄰候選邊後取最小生成樹 (Prim's)：不依賴原始順序，純粹以空間距離建立骨架 ──
+function _buildMST(pts, k) {
+  const n = pts.length;
+  const adj = Array.from({ length: n }, () => []);
+  const edgeSet = new Map();
+  for (let i = 0; i < n; i++) {
+    const dists = [];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      dists.push([Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]), j]);
+    }
+    dists.sort((a, b) => a[0] - b[0]);
+    for (let m = 0; m < Math.min(k, dists.length); m++) {
+      const [d, j] = dists[m];
+      const key = i < j ? i + '_' + j : j + '_' + i;
+      if (!edgeSet.has(key) || edgeSet.get(key) > d) edgeSet.set(key, d);
+    }
+  }
+  edgeSet.forEach((d, key) => {
+    const [a, b] = key.split('_').map(Number);
+    adj[a].push([b, d]); adj[b].push([a, d]);
+  });
+
+  const inTree = new Uint8Array(n), mstAdj = Array.from({ length: n }, () => []);
+  if (n === 0) return mstAdj;
+  inTree[0] = 1;
+  let treeSize = 1;
+  const cand = [];
+  const addNode = u => adj[u].forEach(([v, d]) => { if (!inTree[v]) cand.push([d, u, v]); });
+  addNode(0);
+  while (treeSize < n && cand.length) {
+    cand.sort((a, b) => a[0] - b[0]);
+    const [d, u, v] = cand.shift();
+    if (inTree[v]) continue;
+    inTree[v] = 1; treeSize++;
+    mstAdj[u].push([v, d]); mstAdj[v].push([u, d]);
+    addNode(v);
+  }
+  // k 太小造成圖不連通時，剩餘節點強制接到最近的已連通節點
+  if (treeSize < n) {
+    for (let v = 0; v < n; v++) {
+      if (inTree[v]) continue;
+      let bd = Infinity, bu = -1;
+      for (let u = 0; u < n; u++) {
+        if (!inTree[u]) continue;
+        const d = Math.hypot(pts[u][0] - pts[v][0], pts[u][1] - pts[v][1]);
+        if (d < bd) { bd = d; bu = u; }
+      }
+      if (bu >= 0) { mstAdj[bu].push([v, bd]); mstAdj[v].push([bu, bd]); inTree[v] = 1; }
+    }
+  }
+  return mstAdj;
+}
+
+// ── 樹的直徑（最長路徑）：兩次 BFS 找端點，自動排除側量產生的旁支 ──
+function _treeDiameterPath(mstAdj) {
+  const n = mstAdj.length;
+  if (n === 0) return [];
+  function farthestFrom(src) {
+    const dist = new Float64Array(n).fill(-1), prev = new Int32Array(n).fill(-1);
+    dist[src] = 0;
+    const stack = [src];
+    while (stack.length) {
+      const u = stack.pop();
+      mstAdj[u].forEach(([v, d]) => { if (dist[v] < 0) { dist[v] = dist[u] + d; prev[v] = u; stack.push(v); } });
+    }
+    let far = src, maxD = 0;
+    for (let i = 0; i < n; i++) if (dist[i] > maxD) { maxD = dist[i]; far = i; }
+    return { far, prev };
+  }
+  const r1 = farthestFrom(0);
+  const r2 = farthestFrom(r1.far);
+  const path = [];
+  let cur = r2.far;
+  while (cur !== -1) { path.push(cur); cur = r2.prev[cur]; }
+  return path.reverse();
+}
+
+// ── 散點路徑重建：不依賴原始順序，直接用空間結構重建主幹路徑 ──
+function _reconstructPathFromScatter(pts) {
+  if (pts.length < 3) return pts.slice();
+  const scale = _localMeterScale(pts);
+  const ptsM = pts.map(p => [p[0] * scale.mLng, p[1] * scale.mLat]);
+  const downsampled = _gridDownsampleM(ptsM, 2.5); // 2.5 公尺網格
+  if (downsampled.length < 3) return pts.slice();
+  const mstAdj = _buildMST(downsampled, 6);
+  const pathIdx = _treeDiameterPath(mstAdj);
+  const pathM = pathIdx.map(i => downsampled[i]);
+  const simplifiedM = _douglasPeucker(pathM, 1.2); // 1.2 公尺容許誤差
+  return simplifiedM.map(p => [p[0] / scale.mLng, p[1] / scale.mLat]);
+}
+
+// ── Douglas-Peucker 路徑簡化：依走訪順序保留轉角形狀，只去除多餘密集點 ──
 function _douglasPeucker(pts, epsilon) {
   if (pts.length < 3) return pts.slice();
   function perpDist(p, a, b) {
@@ -286,10 +402,8 @@ function addPts(row, sd) {
       return;
     }
 
-    // 依原始走訪順序簡化路徑 (Douglas-Peucker)：保留轉角，去除多餘密集點
-    // epsilon 約 1.5 公尺（以經緯度換算，適用於台灣緯度附近）
-    const RDP_EPSILON = 0.000015;
-    const trendPts = _douglasPeucker(allPts, RDP_EPSILON);
+    // 不依賴原始順序，直接由散點的空間結構重建主幹路徑（格網降採樣 → MST → 取最長路徑 → 化簡）
+    const trendPts = _reconstructPathFromScatter(allPts);
     if (trendPts.length === 1) {
       L.circleMarker([trendPts[0][1], trendPts[0][0]], {
         radius: 5, fillColor: color, color: '#ffffff',
