@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// ── 地圖模組 (map.js) - 修復版 ──
+// ── 地圖模組 (map.js) - 高平滑多線段版 ──
 // ══════════════════════════════════════════════
 
 // 安全讀取全域變數 / 防呆預設值
@@ -181,18 +181,19 @@ function _douglasPeucker(pts, epsilon) {
   return rdp(pts);
 }
 
-// ── 4. 拓撲網絡拆解多路徑 ──
+// ── 4. 拓撲網絡拆解多路徑（去毛刺平滑版） ──
 function _reconstructMultiPathsFromScatter(pts) {
   if (pts.length < 2) return [pts.slice()];
   
   const scale = _localMeterScale(pts);
   const ptsM = pts.map(p => [p[0] * scale.mLng, p[1] * scale.mLat]);
   
-  const nodes = _gridDownsampleM(ptsM, 2.0);
+  // A. 加大網格降採樣 (4.5 公尺網格)：將路口/端點聚集的雜訊點融合成單一節點
+  const nodes = _gridDownsampleM(ptsM, 4.5);
   const n = nodes.length;
   if (n < 2) return [pts.slice()];
 
-  const maxEdgeDist = 25.0;
+  const maxEdgeDist = 30.0;
   const adj = Array.from({ length: n }, () => []);
   const edgeSet = new Set();
 
@@ -204,7 +205,7 @@ function _reconstructMultiPathsFromScatter(pts) {
       if (d <= maxEdgeDist) dists.push({ j, d });
     }
     dists.sort((a, b) => a.d - b.d);
-    for (let k = 0; k < Math.min(3, dists.length); k++) {
+    for (let k = 0; k < Math.min(2, dists.length); k++) {
       const { j, d } = dists[k];
       const key = i < j ? `${i}_${j}` : `${j}_${i}`;
       if (!edgeSet.has(key)) {
@@ -274,9 +275,18 @@ function _reconstructMultiPathsFromScatter(pts) {
     });
   }
 
+  // D. 簡化與過濾毛刺線段
   const finalPaths = [];
   rawSegmentsM.forEach(segM => {
-    const simplifiedM = _douglasPeucker(segM, 1.0);
+    // 檢查線段總長，小於 10 公尺的無效突起/毛刺直接丟棄
+    let segLen = 0;
+    for (let k = 0; k < segM.length - 1; k++) {
+      segLen += Math.hypot(segM[k+1][0] - segM[k][0], segM[k+1][1] - segM[k][1]);
+    }
+    if (segLen < 10.0 && rawSegmentsM.length > 1) return;
+
+    // 簡化誤差容忍度提升至 3.5 公尺，徹底壓平沿路鋸齒狀抖動
+    const simplifiedM = _douglasPeucker(segM, 3.5);
     if (simplifiedM.length >= 2) {
       const segWGS = simplifiedM.map(p => [p[0] / scale.mLng, p[1] / scale.mLat]);
       finalPaths.push(segWGS);
@@ -326,7 +336,7 @@ function addPts(row, sd) {
       return;
     }
 
-    // ── 多線段繪製（防呆 renderer 設定） ──
+    // ── 多線段繪製邏輯 ──
     const multiPaths = _reconstructMultiPathsFromScatter(allPts);
 
     multiPaths.forEach(path => {
