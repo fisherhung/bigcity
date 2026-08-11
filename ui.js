@@ -461,7 +461,9 @@ function editAssetName(id) {
 async function deleteAsset(id) {
   if (confirm('確定刪除此圖層？')) {
     const a=assets.get(id); const uName=document.getElementById('user-select').value;
+    const { error: delErr } = await sb.from('assets').delete().eq('id',id);
+    if (delErr) { toast('刪除失敗：' + delErr.message, 'error'); return; }
     await writeAudit(id,a?.display_name||'','deleted',uName,null,null);
-    await sb.from('assets').delete().eq('id',id);
+    removeLayer(id); refreshAll(); toast('已刪除', 'info');
   }
 }
