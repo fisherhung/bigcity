@@ -1,12 +1,14 @@
 // ══════════════════════════════════════════════
-// ── 地圖模組 (map.js) ──
+// ── 地圖模組 (map.js) - 修復版 ──
 // ══════════════════════════════════════════════
+
+// 安全讀取全域變數 / 防呆預設值
+const _DEFAULT_BRIGHTNESS = typeof DEFAULT_BRIGHTNESS !== 'undefined' ? DEFAULT_BRIGHTNESS : 0.9;
 
 const NLSC_URL  = 'https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}';
 const NLSC_DARK = 'https://wmts.nlsc.gov.tw/wmts/EMAP5/default/GoogleMapsCompatible/{z}/{y}/{x}';
 const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJgCC==';
 
-// Session-unique cache buster — forces fresh tile requests
 const _TILE_VER = Date.now();
 
 function buildTile(dark) {
@@ -19,17 +21,21 @@ function buildTile(dark) {
 }
 
 function applyBrightness(val) {
-  if (typeof map === 'undefined' || !map.getPane) return;
+  if (typeof map === 'undefined' || !map || !map.getPane) return;
   const pane = map.getPane('tilePane');
   if (pane) pane.style.filter = `brightness(${val})`;
 }
 
 function initMap() {
+  if (typeof L === 'undefined') {
+    console.error('Leaflet (L) 未載入！');
+    return;
+  }
+
   map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.8039, 120.9647], 14);
   tileLayer = buildTile(true).addTo(map);
   L.control.zoom({ position: 'topright' }).addTo(map);
 
-  // KEY FIX: remove tilePane filter during zoom to prevent GPU compositing tearing
   map.on('zoomstart', function() {
     const pane = map.getPane('tilePane');
     if (pane) { pane._brightnessFilter = pane.style.filter; pane.style.filter = ''; }
@@ -39,50 +45,60 @@ function initMap() {
     if (pane && pane._brightnessFilter !== undefined) pane.style.filter = pane._brightnessFilter;
   });
 
-  // 套用預設亮度 90%
-  applyBrightness(DEFAULT_BRIGHTNESS);
+  applyBrightness(_DEFAULT_BRIGHTNESS);
 
   // 右鍵選單
   const ctxMenu = document.getElementById('ctx-menu');
-  map.on('contextmenu', e => {
-    e.originalEvent.preventDefault();
-    const lat = e.latlng.lat, lng = e.latlng.lng;
-    const [east, north] = to3826(lng, lat);
-    _ctxCoord = { lat, lng, east, north };
-    document.getElementById('ctx-97-val').innerText = `E ${east.toFixed(3)}, N ${north.toFixed(3)}`;
-    document.getElementById('ctx-wgs-val').innerText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-    const mx = e.originalEvent.clientX, my = e.originalEvent.clientY;
-    ctxMenu.style.left = (mx + 240 > window.innerWidth ? mx - 240 : mx) + 'px';
-    ctxMenu.style.top  = (my + 120 > window.innerHeight ? my - 120 : my) + 'px';
-    ctxMenu.style.display = 'block';
-  });
-  document.getElementById('ctx-97').addEventListener('click', () => copyCoord('97'));
-  document.getElementById('ctx-wgs').addEventListener('click', () => copyCoord('wgs'));
-  document.getElementById('ctx-streetview').addEventListener('click', openStreetView);
-  document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) ctxMenu.style.display = 'none'; });
-  map.on('click', () => ctxMenu.style.display = 'none');
+  if (ctxMenu) {
+    map.on('contextmenu', e => {
+      e.originalEvent.preventDefault();
+      const lat = e.latlng.lat, lng = e.latlng.lng;
+      const [east, north] = typeof to3826 === 'function' ? to3826(lng, lat) : [0, 0];
+      _ctxCoord = { lat, lng, east, north };
+      const el97 = document.getElementById('ctx-97-val');
+      const elWgs = document.getElementById('ctx-wgs-val');
+      if (el97) el97.innerText = `E ${east.toFixed(3)}, N ${north.toFixed(3)}`;
+      if (elWgs) elWgs.innerText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      const mx = e.originalEvent.clientX, my = e.originalEvent.clientY;
+      ctxMenu.style.left = (mx + 240 > window.innerWidth ? mx - 240 : mx) + 'px';
+      ctxMenu.style.top  = (my + 120 > window.innerHeight ? my - 120 : my) + 'px';
+      ctxMenu.style.display = 'block';
+    });
+
+    const c97 = document.getElementById('ctx-97');
+    const cwgs = document.getElementById('ctx-wgs');
+    const csv = document.getElementById('ctx-streetview');
+    if (c97 && typeof copyCoord === 'function') c97.addEventListener('click', () => copyCoord('97'));
+    if (cwgs && typeof copyCoord === 'function') cwgs.addEventListener('click', () => copyCoord('wgs'));
+    if (csv && typeof openStreetView === 'function') csv.addEventListener('click', openStreetView);
+    document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) ctxMenu.style.display = 'none'; });
+    map.on('click', () => ctxMenu.style.display = 'none');
+  }
 }
 
 // ── 亮度滑桿 ──
 document.addEventListener('DOMContentLoaded', () => {
   const slider     = document.getElementById('map-brightness');
   const valDisplay = document.getElementById('map-brightness-val');
-  // 設定預設值
-  slider.value = DEFAULT_BRIGHTNESS;
-  valDisplay.innerText = Math.round(DEFAULT_BRIGHTNESS * 100) + '%';
+  if (slider && valDisplay) {
+    slider.value = _DEFAULT_BRIGHTNESS;
+    valDisplay.innerText = Math.round(_DEFAULT_BRIGHTNESS * 100) + '%';
 
-  slider.addEventListener('input', e => {
-    const val = parseFloat(e.target.value);
-    valDisplay.innerText = Math.round(val * 100) + '%';
-    if (typeof applyBrightness === 'function') applyBrightness(val);
-  });
+    slider.addEventListener('input', e => {
+      const val = parseFloat(e.target.value);
+      valDisplay.innerText = Math.round(val * 100) + '%';
+      if (typeof applyBrightness === 'function') applyBrightness(val);
+    });
+  }
 });
 
 function setOnline(on) {
   const dot = document.getElementById('db-dot'), lbl = document.getElementById('db-label');
   if (dot) { dot.style.background = on ? 'var(--accent)' : 'var(--danger)'; dot.classList.toggle('live', false); }
   if (lbl) { lbl.innerText = on ? 'LIVE' : 'OFFLINE'; lbl.style.color = on ? 'var(--accent)' : 'var(--danger)'; }
-  rtLog(on ? '✓ Supabase 連線成功，等待 RT channel…' : '✗ DB 連線失敗', on ? '#4edea3' : '#ff6b7a');
+  if (typeof rtLog === 'function') {
+    rtLog(on ? '✓ Supabase 連線成功，等待 RT channel…' : '✗ DB 連線失敗', on ? '#4edea3' : '#ff6b7a');
+  }
 }
 
 // ── 資產視覺層 ──
@@ -91,19 +107,24 @@ function addAsset(row, sd) {
   row.type === 'img' ? addImg(row, sd) : addPts(row, sd);
 }
 
+function safeSColor(status) {
+  return typeof sColor === 'function' ? sColor(status) : '#3b82f6';
+}
+
 function addImg(row, sd) {
   if (assets.has(row.id)) return;
   const b = row.bounds_json;
-  if (b.w == null || b.e == null || b.s == null || b.n == null) return;
-  const sw = to84(b.w, b.s), ne = to84(b.e, b.n);
+  if (!b || b.w == null || b.e == null || b.s == null || b.n == null) return;
+  const sw = typeof to84 === 'function' ? to84(b.w, b.s) : [b.w, b.s];
+  const ne = typeof to84 === 'function' ? to84(b.e, b.n) : [b.e, b.n];
   function mkBounds() { return L.latLngBounds(L.latLng(sw[1], sw[0]), L.latLng(ne[1], ne[0])); }
   const overlay = L.imageOverlay(row.img_url || row.img_data || '', mkBounds(), { opacity: 0.85, interactive: false }).addTo(map);
-  const rect = L.rectangle(mkBounds(), { color: sColor(sd?.status), weight: 2, fill: false, interactive: true }).addTo(map);
+  const rect = L.rectangle(mkBounds(), { color: safeSColor(sd?.status), weight: 2, fill: false, interactive: true }).addTo(map);
   rect.bindTooltip(row.display_name, { className: 'tt', sticky: true, permanent: false });
-  const fn = () => openPanel(row.id);
+  const fn = () => { if (typeof openPanel === 'function') openPanel(row.id); };
   rect.on('click', fn);
   rect.on('mouseover', () => rect.setStyle({ color: '#8de8ff', weight: 4 }));
-  rect.on('mouseout',  () => rect.setStyle({ color: sColor(sd?.status), weight: 2 }));
+  rect.on('mouseout',  () => rect.setStyle({ color: safeSColor(sd?.status), weight: 2 }));
   assets.set(row.id, { type: 'img', rect, overlay, mkBounds, _clickHandler: fn, name: row.display_name, display_name: row.display_name, statusData: sd, manual_period: row.manual_period || '' });
 }
 
@@ -160,19 +181,17 @@ function _douglasPeucker(pts, epsilon) {
   return rdp(pts);
 }
 
-// ── 4. 關鍵演算法：建構拓撲網絡，拆解為多條獨立道路線段 ──
+// ── 4. 拓撲網絡拆解多路徑 ──
 function _reconstructMultiPathsFromScatter(pts) {
   if (pts.length < 2) return [pts.slice()];
   
   const scale = _localMeterScale(pts);
   const ptsM = pts.map(p => [p[0] * scale.mLng, p[1] * scale.mLat]);
   
-  // A. 降採樣 (2.0 公尺網格)
   const nodes = _gridDownsampleM(ptsM, 2.0);
   const n = nodes.length;
   if (n < 2) return [pts.slice()];
 
-  // B. 建立距離限制的無向圖 (近鄰圖, 最大跳躍距離 25 公尺, 避免隔街飛線)
   const maxEdgeDist = 25.0;
   const adj = Array.from({ length: n }, () => []);
   const edgeSet = new Set();
@@ -185,7 +204,6 @@ function _reconstructMultiPathsFromScatter(pts) {
       if (d <= maxEdgeDist) dists.push({ j, d });
     }
     dists.sort((a, b) => a.d - b.d);
-    // 每個點最多連向最近的 3 個鄰居，避免複雜交叉網格
     for (let k = 0; k < Math.min(3, dists.length); k++) {
       const { j, d } = dists[k];
       const key = i < j ? `${i}_${j}` : `${j}_${i}`;
@@ -197,13 +215,11 @@ function _reconstructMultiPathsFromScatter(pts) {
     }
   }
 
-  // C. 依據交叉點（度數 != 2）切割成獨立的連續線段
   const visitedEdges = new Set();
   const rawSegmentsM = [];
 
   for (let i = 0; i < n; i++) {
     const degree = adj[i].length;
-    // 從端點 (degree === 1) 或 交叉口 (degree > 2) 出發走訪
     if (degree !== 2 || degree === 0) {
       adj[i].forEach(next => {
         const edgeKey = i < next ? `${i}_${next}` : `${next}_${i}`;
@@ -214,7 +230,6 @@ function _reconstructMultiPathsFromScatter(pts) {
         let prev = i;
         let curr = next;
 
-        // 當中間節點度數為 2（單純道路中間點）時，持續延伸線段
         while (adj[curr].length === 2) {
           const neighbors = adj[curr];
           const unvisitedNext = neighbors.find(nbr => nbr !== prev);
@@ -236,7 +251,6 @@ function _reconstructMultiPathsFromScatter(pts) {
     }
   }
 
-  // 處理可能存在的純閉合環路（如繞學校一圈沒有端點的情況）
   for (let i = 0; i < n; i++) {
     adj[i].forEach(next => {
       const edgeKey = i < next ? `${i}_${next}` : `${next}_${i}`;
@@ -260,10 +274,9 @@ function _reconstructMultiPathsFromScatter(pts) {
     });
   }
 
-  // D. 簡化與單位換回 WGS84 經緯度
   const finalPaths = [];
   rawSegmentsM.forEach(segM => {
-    const simplifiedM = _douglasPeucker(segM, 1.0); // 1.0 米容許誤差簡化
+    const simplifiedM = _douglasPeucker(segM, 1.0);
     if (simplifiedM.length >= 2) {
       const segWGS = simplifiedM.map(p => [p[0] / scale.mLng, p[1] / scale.mLat]);
       finalPaths.push(segWGS);
@@ -275,7 +288,7 @@ function _reconstructMultiPathsFromScatter(pts) {
 
 function addPts(row, sd) {
   const group = L.featureGroup().addTo(map);
-  const color = sColor(sd?.status || 'none');
+  const color = safeSColor(sd?.status || 'none');
   let loaded = false;
 
   async function ensureLoaded() {
@@ -288,18 +301,18 @@ function addPts(row, sd) {
       if (Array.isArray(raw)) features = raw; else if (raw?.type === 'FeatureCollection') features = raw.features || []; else if (raw?.type === 'Feature') features = [raw];
     }
 
-    // Collect valid [lng, lat] pairs
     const allPts = [];
     features.forEach(f => {
       let lat = null, lng = null;
       if (f.geometry?.coordinates) {
         const cx = parseFloat(f.geometry.coordinates[0]), cy = parseFloat(f.geometry.coordinates[1]);
         if (!isNaN(cx) && !isNaN(cy)) {
-          if (looksWGS84(cx, cy)) { lng = cx; lat = cy; }
-          else { const w = to84(cx, cy); lng = w[0]; lat = w[1]; }
+          if (typeof looksWGS84 === 'function' && looksWGS84(cx, cy)) { lng = cx; lat = cy; }
+          else if (typeof to84 === 'function') { const w = to84(cx, cy); lng = w[0]; lat = w[1]; }
+          else { lng = cx; lat = cy; }
         }
       }
-      if (lat === null) {
+      if (lat === null && typeof parseDMS === 'function') {
         const p = f.properties || {};
         const pLat = parseDMS(p['緯度'] ?? p['lat'] ?? p['latitude']);
         const pLng = parseDMS(p['經度'] ?? p['lng'] ?? p['longitude']);
@@ -313,26 +326,26 @@ function addPts(row, sd) {
       return;
     }
 
-    // ── 多線段獨立繪製邏輯 ──
+    // ── 多線段繪製（防呆 renderer 設定） ──
     const multiPaths = _reconstructMultiPathsFromScatter(allPts);
 
     multiPaths.forEach(path => {
       if (path.length === 1) {
-        L.circleMarker([path[0][1], path[0][0]], {
+        const markerOpts = {
           radius: 4, fillColor: color, color: '#ffffff',
-          weight: 1, fillOpacity: 0.9, renderer: canvasRenderer
-        }).addTo(group);
+          weight: 1, fillOpacity: 0.9
+        };
+        if (typeof canvasRenderer !== 'undefined') markerOpts.renderer = canvasRenderer;
+        L.circleMarker([path[0][1], path[0][0]], markerOpts).addTo(group);
       } else if (path.length >= 2) {
         const latLngs = path.map(p => [p[1], p[0]]);
 
-        // 外層光暈底線 (Glow Line)
         const bgLine = L.polyline(latLngs, {
           color, weight: 8, opacity: 0.35,
           lineJoin: 'round', lineCap: 'round'
         }).addTo(group);
         bgLine.options.isBorder = true;
 
-        // 主體道路線段 (Core Line)
         const mainLine = L.polyline(latLngs, {
           color, weight: 4.5, opacity: 0.95,
           lineJoin: 'round', lineCap: 'round',
@@ -351,7 +364,7 @@ function addPts(row, sd) {
   }
 
   group.bindTooltip(row.display_name, { className: 'tt', sticky: true });
-  const fn = () => { ensureLoaded(); openPanel(row.id); };
+  const fn = () => { ensureLoaded(); if (typeof openPanel === 'function') openPanel(row.id); };
   group.on('click', fn);
   group.on('mouseover', () => group.eachLayer(l => {
     if (l.setStyle) l.setStyle(l instanceof L.Polyline && !(l instanceof L.Polygon)
@@ -359,7 +372,7 @@ function addPts(row, sd) {
       : { fillColor: '#8de8ff', color: '#fff', radius: 7 });
   }));
   group.on('mouseout', () => group.eachLayer(l => {
-    const curC = sColor(sd?.status || 'none');
+    const curC = safeSColor(sd?.status || 'none');
     if (l.setStyle) l.setStyle(l instanceof L.Polyline && !(l instanceof L.Polygon)
       ? { color: curC, weight: l.options.isBorder ? 7 : 4.5, opacity: l.options.isBorder ? 0.35 : 0.95 }
       : { fillColor: curC, color: '#fff', radius: 5 });
@@ -377,28 +390,26 @@ function removeLayer(id) {
 
 function applyMapStyles() {
   let csw = null, cne = null;
-  const fitNeeded = curOp !== 'all' || activePeriod !== 'all';
+  const fitNeeded = (typeof curOp !== 'undefined' && curOp !== 'all') || (typeof activePeriod !== 'undefined' && activePeriod !== 'all');
   assets.forEach(a => {
     const op = a.statusData?.operator_name || null, st = a.statusData?.status || 'none';
-    const period = effectivePeriod(a);
-    const opMatch     = curOp === 'all' || (op === curOp && (st === 'claimed' || st === 'done'));
-    const periodMatch = activePeriod === 'all' || period === activePeriod;
+    const period = typeof effectivePeriod === 'function' ? effectivePeriod(a) : 'all';
+    const opMatch     = (typeof curOp === 'undefined' || curOp === 'all') || (op === curOp && (st === 'claimed' || st === 'done'));
+    const periodMatch = (typeof activePeriod === 'undefined' || activePeriod === 'all') || period === activePeriod;
     const show = opMatch && periodMatch;
     if (a.type === 'img') {
       a.overlay.setOpacity(show ? 0.85 : 0);
-      a.rect.setStyle({ color: sColor(st), opacity: show ? 1 : 0, fillOpacity: 0 });
+      a.rect.setStyle({ color: safeSColor(st), opacity: show ? 1 : 0, fillOpacity: 0 });
       if (show) a.rect.on('click', a._clickHandler); else a.rect.off('click', a._clickHandler);
     } else {
-      const c = sColor(st);
+      const c = safeSColor(st);
       a.visual.eachLayer(l => {
         if (!l.setStyle) return;
         if (l instanceof L.Polyline && !(l instanceof L.Polygon)) {
-          // Polyline layer
           const w = l.options.isBorder ? 7 : 4.5;
           const op = l.options.isBorder ? 0.35 : 0.95;
           l.setStyle({ color: c, opacity: show ? op : 0, weight: w });
         } else {
-          // CircleMarker fallback
           l.setStyle({ fillColor: c, color: c, fillOpacity: show ? 0.85 : 0, opacity: show ? 0.85 : 0 });
         }
       });
@@ -415,9 +426,8 @@ function applyMapStyles() {
   if (fitNeeded && csw && cne) map.fitBounds(L.latLngBounds(csw, cne), { padding: [80, 80], maxZoom: 17, animate: false });
 }
 
-// ── 地圖 Pulse Beacon 特效 ──
 function pulseBeaconPts(a) {
-  const origColor = sColor(a.statusData?.status || 'none');
+  const origColor = safeSColor(a.statusData?.status || 'none');
   let cnt = 0;
   const fl = setInterval(() => {
     cnt++;
@@ -441,7 +451,7 @@ function pulseBeaconPts(a) {
 }
 
 function pulseBeaconImg(a) {
-  const orig = sColor(a.statusData?.status || 'none');
+  const orig = safeSColor(a.statusData?.status || 'none');
   let cnt = 0;
   const fl = setInterval(() => {
     cnt++;
