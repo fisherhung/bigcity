@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>新竹王 - 人行道圖資協作系統</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏔</text></svg>">
+  
+  <!-- 第三方 CSS 庫 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- 第三方 JS 庫 -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5/dist/togeojson.umd.min.js"></script>
+
+  <!-- 字型 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <!-- 專案 CSS -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <!-- Loading 畫面 -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <p style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--accent);letter-spacing:.2em;text-transform:uppercase;">
+      CONNECTING TO DATABASE</p>
+    <p style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:6px;letter-spacing:.1em;">
+      新竹人行道圖資協作系統</p>
+  </div>
+  <div id="toast"></div>
+
+  <!-- RT 診斷面板 -->
+  <div id="rt-diag" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:8000;background:rgba(8,10,14,0.92);border:1px solid rgba(192,193,255,0.2);border-radius:12px;padding:10px 18px;font-size:11px;font-family:'JetBrains Mono',monospace;color:#a5b4fc;min-width:340px;max-width:520px;display:none;backdrop-filter:blur(16px);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-weight:700;font-size:11px;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;">RT 診斷</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="rt-state-badge" style="padding:2px 8px;border-radius:3px;font-size:9px;font-weight:700;background:rgba(100,116,139,0.3);color:#94a3b8;letter-spacing:.08em;text-transform:uppercase;">等待中</span>
+        <button onclick="document.getElementById('rt-diag').style.display='none'" style="background:none;border:none;cursor:pointer;color:#64748b;font-size:14px;line-height:1;">✕</button>
+      </div>
+    </div>
+    <div id="rt-log" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;"></div>
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+      <button onclick="rtDiagTest()" style="flex:1;padding:4px 0;border-radius:3px;border:1px solid rgba(192,193,255,0.2);background:rgba(192,193,255,0.06);color:var(--accent);cursor:pointer;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">測試 RT</button>
+      <button onclick="startPolling(3000)" style="flex:1;padding:4px 0;border-radius:3px;border:1px solid rgba(255,185,95,0.2);background:rgba(255,185,95,0.06);color:var(--amber);cursor:pointer;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">強制輪詢</button>
+      <button onclick="document.getElementById('rt-log').innerHTML=''" style="padding:4px 8px;border-radius:3px;border:1px solid rgba(100,116,139,0.2);background:none;color:#64748b;cursor:pointer;font-size:9px;text-transform:uppercase;letter-spacing:.06em;">清除</button>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button id="btn-toggle" style="width:38px;height:38px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-muted);flex-shrink:0;transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+        <i data-lucide="panel-left" style="width:17px;height:17px;"></i>
+      </button>
+      <div>
+        <div class="brand-title">新竹人行道圖資協作系統</div>
+        <div class="brand-sub">INFRASTRUCTURE · GIS COLLABORATION PLATFORM</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <!-- 座標定位 -->
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius-md);">
+        <i data-lucide="crosshair" style="width:14px;height:14px;color:var(--accent);flex-shrink:0;"></i>
+        <input id="locate-input" type="text" placeholder="97座標：305000, 2652000">
+        <button id="locate-btn" onclick="locateCoord()">定位</button>
+      </div>
+      <!-- 說明 -->
+      <button onclick="openHelp()" style="width:36px;height:36px;border-radius:99px;border:1px solid var(--border);background:var(--input-bg);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-muted);transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+        <i data-lucide="help-circle" style="width:16px;height:16px;"></i>
+      </button>
+      <!-- 備忘錄 -->
+      <button onclick="toggleMemo()" id="memo-btn" style="display:flex;align-items:center;gap:5px;padding:8px 15px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+        <i data-lucide="notebook-pen" style="width:15px;height:15px;"></i> 備忘錄
+        <span id="memo-count" style="display:none;background:var(--danger);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:800;animation:memo-badge-pop .3s cubic-bezier(.16,1,.3,1);"></span>
+      </button>
+      <!-- 全員血條 -->
+      <button onclick="openStats()" style="display:flex;align-items:center;gap:5px;padding:8px 15px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+        <i data-lucide="bar-chart-2" style="width:15px;height:15px;"></i> 進度
+      </button>
+      <!-- 操作紀錄 -->
+      <button onclick="openAudit()" style="display:flex;align-items:center;gap:5px;padding:8px 15px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+        <i data-lucide="history" style="width:15px;height:15px;"></i> 紀錄
+      </button>
+      <!-- Operator selector -->
+      <div style="display:flex;align-items:center;gap:7px;padding:8px 16px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);">
+        <div>
+          <div class="mono-label" style="margin-bottom:2px;">OPERATOR</div>
+          <select id="user-select" style="border:none;outline:none;font-weight:600;font-size:14px;color:var(--text);background:transparent;min-width:100px;cursor:pointer;font-family:'Space Grotesk','Noto Sans TC',sans-serif;">
+            <option value="">選擇作業員...</option>
+          </select>
+        </div>
+        <div style="width:1px;height:28px;background:var(--border);margin:0 1px;"></div>
+        <button onclick="openOpManager()" style="width:29px;height:29px;border-radius:var(--radius-sm);border:none;background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-muted);transition:color .2s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-muted)'">
+          <i data-lucide="settings-2" style="width:16px;height:16px;"></i>
+        </button>
+      </div>
+      <!-- DB dot -->
+      <button onclick="toggleRtDiag()" title="RT 診斷" style="display:flex;align-items:center;gap:5px;padding:7px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;transition:all .2s;">
+        <div id="db-dot" style="width:8px;height:8px;border-radius:50%;background:#3a4050;flex-shrink:0;"></div>
+        <span id="db-label" class="mono-label" style="letter-spacing:.1em;">LIVE</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <div style="display:flex;flex:1;overflow:hidden;position:relative;z-index:1;">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div style="padding:10px 11px 0;flex-shrink:0;">
+        <!-- Search -->
+        <div style="display:flex;align-items:center;gap:7px;background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 11px;margin-bottom:7px;">
+          <i data-lucide="search" style="width:12px;height:12px;color:var(--text-muted);flex-shrink:0;"></i>
+          <input id="search-input" type="text" placeholder="搜尋路段名稱..." oninput="renderList()" style="background:none;border:none;outline:none;font-size:12px;font-weight:500;width:100%;padding:0;color:var(--text);">
+        </div>
+        <!-- Period chips -->
+        <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center;">
+          <span class="mono-label" style="flex-shrink:0;">期別</span>
+          <div id="period-chips-wrap" style="display:flex;gap:4px;align-items:center;overflow-x:auto;">
+            <div class="period-chip active" data-period="all" onclick="selectPeriod('all')">ALL</div>
+            <div class="period-chip" data-period="初" onclick="selectPeriod('初')">初期</div>
+            <div class="period-chip" data-period="中" onclick="selectPeriod('中')">中期</div>
+            <div class="period-chip" data-period="末" onclick="selectPeriod('末')">末期</div>
+          </div>
+          <button onclick="openPeriodConfig()" title="設定期別名稱與分界" style="margin-left:auto;display:flex;align-items:center;gap:3px;padding:2px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--input-bg);cursor:pointer;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;transition:all .2s;" onmouseover="this.style.borderColor='var(--border-mid)'" onmouseout="this.style.borderColor='var(--border)'">
+            <i data-lucide="settings" style="width:10px;height:10px;"></i> 設定
+          </button>
+        </div>
+        <!-- Status filter chips -->
+        <div style="display:flex;gap:4px;margin-bottom:7px;">
+          <div class="chip active" data-filter="all" onclick="setFilter('all')">ALL</div>
+          <div class="chip" data-filter="none" onclick="setFilter('none')">OPEN</div>
+          <div class="chip" data-filter="claimed" onclick="setFilter('claimed')">ACTIVE</div>
+          <div class="chip" data-filter="done" onclick="setFilter('done')">DONE</div>
+        </div>
+        <!-- Operator filter -->
+        <div id="op-filter-list" style="display:flex;gap:4px;overflow-x:auto;padding-bottom:7px;"></div>
+        <!-- Legend -->
+        <div style="display:flex;gap:10px;margin-bottom:4px;">
+          <span style="display:flex;align-items:center;gap:3px;" class="mono-label">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--danger);display:inline-block;box-shadow:0 0 5px var(--danger);"></span>未認領
+          </span>
+          <span style="display:flex;align-items:center;gap:3px;" class="mono-label">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--amber);display:inline-block;box-shadow:0 0 5px var(--amber);"></span>進行中
+          </span>
+          <span style="display:flex;align-items:center;gap:3px;" class="mono-label">
+            <span style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 5px var(--green);"></span>已完工
+          </span>
+        </div>
+      </div>
+
+      <!-- Tab bar -->
+      <div style="display:flex;align-items:center;padding:0 11px;border-bottom:1px solid var(--border);border-top:1px solid var(--border);flex-shrink:0;">
+        <div class="tab active" data-type="point" onclick="setTypeTab('point')">點位</div>
+        <div class="tab" data-type="img" onclick="setTypeTab('img')">PNG</div>
+        <div class="tab" data-type="kml" onclick="setTypeTab('kml')">KML</div>
+        <button id="sort-btn" onclick="toggleSort()" style="padding:4px 6px;border:none;background:none;cursor:pointer;color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:800;flex-shrink:0;line-height:1;">↑</button>
+        <button onclick="toggleTools()" style="padding:5px;border:none;background:none;cursor:pointer;color:var(--text-muted);margin-left:2px;flex-shrink:0;">
+          <i id="fold-icon" data-lucide="chevron-up" style="width:14px;height:14px;transition:transform .3s;transform:rotate(180deg);"></i>
+        </button>
+      </div>
+
+      <!-- Tools wrap -->
+      <div id="tools-wrap" style="max-height:320px;flex-shrink:0;" class="closed">
+        <div style="padding:9px 11px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <button onclick="triggerFile('fi-json')" class="btn-accent" style="padding:9px;font-size:10px;border:1px solid var(--accent-border);">1. 匯入 JSON</button>
+          <button onclick="triggerFile('fi-png')" class="btn-accent" style="padding:9px;font-size:10px;border:1px solid var(--accent-border);">2. 上傳 PNG</button>
+          <button onclick="triggerFile('fi-points')" style="grid-column:span 2;padding:9px;font-size:11px;font-weight:600;background:var(--accent-dim);border:1px solid var(--accent-border);color:var(--accent);border-radius:var(--radius-md);cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all .2s;" onmouseover="this.style.background='rgba(192,193,255,0.15)'" onmouseout="this.style.background='var(--accent-dim)'">
+            📍 匯入點位圖層（GeoJSON / CSV · 批次）
+          </button>
+          <button onclick="triggerFile('fi-kml')" style="grid-column:span 2;padding:9px;font-size:11px;font-weight:600;background:var(--green-dim);border:1px solid var(--green-border);color:var(--green);border-radius:var(--radius-md);cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all .2s;" onmouseover="this.style.background='rgba(78,222,163,0.18)'" onmouseout="this.style.background='var(--green-dim)'">
+            🗺 匯入路網 KML 圖層
+          </button>
+          <input type="file" id="fi-json" class="hidden" accept=".json">
+          <input type="file" id="fi-png" class="hidden" accept="image/png">
+          <input type="file" id="fi-points" class="hidden" accept=".geojson,.json,.csv" multiple>
+          <input type="file" id="fi-kml" class="hidden" accept=".kml,.kmz">
+        </div>
+        <div id="batch-progress-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span class="mono-label" id="batch-label">上傳中…</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:800;color:var(--accent);" id="batch-pct">0%</span>
+          </div>
+          <div class="batch-prog-track">
+            <div class="batch-prog-fill" id="batch-fill" style="width:0%;"></div>
+          </div>
+          <div class="mono-label" style="margin-top:4px;" id="batch-detail"></div>
+        </div>
+        <div style="padding:7px 11px 11px;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span class="mono-label" style="letter-spacing:.12em;">GLOBAL PROGRESS</span>
+            <span id="stat-percent" style="font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:800;color:var(--accent);">0%</span>
+          </div>
+          <div class="prog-track">
+            <div id="progress-bar" class="prog-fill" style="width:0%;background:linear-gradient(90deg,var(--accent),var(--green));"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Asset list -->
+      <div id="asset-list" style="flex:1;overflow-y:auto;padding:5px 9px;display:flex;flex-direction:column;gap:2px;">
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:7px 13px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+        <span class="mono-label" style="font-size:10px;">GIS COLLAB SYS</span>
+        <span class="mono-label" style="font-size:10px;">by Hung</span>
+      </div>
+    </aside>
+
+    <!-- Main map area -->
+    <main style="flex:1;position:relative;">
+      <div id="map"></div>
+
+      <!-- Map brightness control (預設 90%) -->
+      <div id="brightness-ctrl" style="position:absolute;bottom:25px;left:50%;transform:translateX(-50%);z-index:1000;background:var(--surface-solid);border:1px solid var(--border);border-radius:99px;padding:6px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 4px 12px rgba(0,0,0,0.4);backdrop-filter:blur(10px);">
+        <i data-lucide="sun" style="width:14px;height:14px;color:var(--text-muted);"></i>
+        <input type="range" id="map-brightness" min="0" max="1" step="0.05" value="0.9" style="width:100px;cursor:pointer;" title="調整底圖亮度">
+        <span id="map-brightness-val" class="mono-label" style="font-size:11px;color:var(--text);width:32px;text-align:right;">90%</span>
+      </div>
+
+      <!-- Action panel -->
+      <div id="action-panel" style="display:none;">
+        <div style="margin-bottom:13px;">
+          <div class="mono-label" style="color:var(--accent);letter-spacing:.14em;margin-bottom:3px;">SELECTED LAYER</div>
+          <h3 id="ui-name" style="font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;color:var(--text);margin-bottom:7px;word-break:break-all;line-height:1.3;"></h3>
+          <div id="ui-badge"></div>
+        </div>
+        <div id="lock-notice" style="display:none;margin-bottom:10px;padding:8px 11px;background:var(--amber-dim);border:1px solid var(--amber-border);border-radius:var(--radius-md);align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--amber);">
+          <i data-lucide="lock" style="width:14px;height:14px;flex-shrink:0;"></i>
+          <span id="lock-msg"></span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button id="btn-claim" class="btn-accent" style="padding:12px;font-size:14px;font-weight:700;border:1px solid var(--accent-border);">認領此區塊</button>
+          <button id="btn-done" class="btn-green" style="padding:12px;font-size:14px;font-weight:700;">標記已完工</button>
+          <div style="display:flex;gap:6px;">
+            <button id="btn-release" class="btn-ghost" style="flex:1;padding:8px;font-size:13px;">釋出</button>
+            <button onclick="closePanel()" class="btn-ghost" style="flex:1;padding:8px;font-size:13px;">關閉</button>
+          </div>
+        </div>
+        <div id="panel-memo-section">
+          <div class="pm-header">
+            <div class="pm-title">
+              <span>📝</span><span>備忘錄</span>
+              <span id="panel-memo-badge" style="display:none;background:var(--danger);color:#fff;border-radius:3px;padding:0 5px;font-size:11px;font-weight:800;"></span>
+            </div>
+            <button class="pm-add-btn" onclick="togglePanelMemoInput()"><span style="font-size:15px;line-height:1;">+</span> 新增</button>
+          </div>
+          <div id="panel-memo-input-wrap">
+            <textarea id="panel-memo-ta" rows="2" placeholder="輸入備忘…（Enter 送出）" style="font-size:14px;"></textarea>
+            <div class="pm-submit-row">
+              <button class="btn-accent" onclick="submitPanelMemo()" style="flex:1;padding:7px;font-size:13px;font-weight:700;border:1px solid var(--accent-border);border-radius:var(--radius-md);">送出</button>
+              <button class="btn-ghost" onclick="togglePanelMemoInput()" style="flex:1;padding:7px;font-size:13px;border-radius:var(--radius-md);">取消</button>
+            </div>
+          </div>
+          <div id="panel-memo-list" style="display:flex;flex-direction:column;gap:5px;max-height:150px;overflow-y:auto;margin-top:6px;"></div>
+        </div>
+      </div>
+
+      <!-- KML road panel -->
+      <div id="road-panel">
+        <div id="road-panel-header" onclick="toggleRoadPanel()">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:14px;">🗺</span>
+            <div>
+              <div style="font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:700;color:var(--text);">KML 路網圖層</div>
+              <div class="mono-label" id="kml-count-label" style="margin-top:1px;">0 個圖層</div>
+            </div>
+          </div>
+          <span id="road-chevron" style="color:var(--text-muted);font-size:11px;transition:transform .3s;transform:rotate(-90deg);">▼</span>
+        </div>
+        <div id="road-panel-body">
+          <div id="kml-layer-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+          <label class="kml-upload-btn" style="display:block;">
+            <input type="file" accept=".kml,.kmz" style="display:none;" id="kml-file-input" onchange="onKmlFileChange(event)">
+            ＋ 上傳 KML 圖層
+          </label>
+          <div class="kml-divider"></div>
+          <div id="kml-diff-section">
+            <div class="mono-label" style="letter-spacing:.12em;margin-bottom:3px;">ROAD DIFF 消除預覽</div>
+            <div id="diff-stat">開啟圖層後可預覽</div>
+            <div style="display:flex;gap:5px;margin-top:3px;">
+              <button id="btn-preview" onclick="previewDiff()" style="flex:1;padding:6px 9px;border-radius:var(--radius-sm);border:1px solid var(--accent-border);background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;transition:all .2s;">⚡ 預覽消除</button>
+              <button id="btn-clear-diff" onclick="clearDiff()" style="display:none;padding:6px 9px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;transition:all .2s;">✕ 清除</button>
+            </div>
+            <div id="road-status"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Color popover -->
+  <div id="color-popover"></div>
+
+  <!-- Memo panel -->
+  <div id="memo-panel">
+    <div style="padding:16px 16px 11px;border-bottom:1px solid var(--border);flex-shrink:0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:var(--text);">備忘錄</div>
+        <button onclick="toggleMemo()" class="btn-ghost" style="width:26px;height:26px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+      </div>
+      <div class="mono-label">多人共享 · 即時同步</div>
+    </div>
+    <div style="padding:11px 13px;border-bottom:1px solid var(--border);flex-shrink:0;">
+      <div id="memo-op-hint" style="display:flex;align-items:center;gap:5px;margin-bottom:7px;padding:5px 9px;border-radius:var(--radius-md);background:var(--card-bg);border:1px solid var(--border);">
+        <span style="font-size:12px;">👤</span>
+        <span id="memo-op-name" class="mono-label">請先在右上角選擇作業員</span>
+      </div>
+      <textarea id="memo-input" rows="3" placeholder="輸入備忘內容..." style="width:100%;padding:9px 11px;font-size:12px;resize:none;border-radius:var(--radius-md);margin-bottom:7px;"></textarea>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <select id="memo-asset-sel" style="flex:1;padding:6px 9px;font-size:11px;font-weight:600;border-radius:var(--radius-md);cursor:pointer;">
+          <option value="">關聯圖層（選填）</option>
+        </select>
+        <button onclick="addMemo()" class="btn-accent" style="padding:6px 14px;font-size:11px;font-weight:700;border:1px solid var(--accent-border);flex-shrink:0;">新增</button>
+      </div>
+    </div>
+    <div id="memo-list" style="flex:1;overflow-y:auto;padding:9px 11px;display:flex;flex-direction:column;gap:7px;"></div>
+  </div>
+
+  <!-- Right-click menu -->
+  <div id="ctx-menu" style="display:none;position:fixed;z-index:3000;background:rgba(13,16,20,0.95);border:1px solid var(--border-mid);border-radius:var(--radius-lg);padding:5px;box-shadow:0 10px 40px rgba(0,0,0,0.5);min-width:200px;backdrop-filter:blur(12px);">
+    <div class="mono-label" style="padding:3px 10px 5px;letter-spacing:.12em;">複製座標</div>
+    <button id="ctx-97" style="width:100%;text-align:left;padding:7px 11px;border:none;background:none;cursor:pointer;border-radius:var(--radius-md);display:flex;flex-direction:column;gap:2px;transition:background .15s;" onmouseover="this.style.background='var(--accent-dim)'" onmouseout="this.style.background='none'">
+      <span class="mono-label" style="color:var(--accent);">EPSG:3826 / 97 座標</span>
+      <span id="ctx-97-val" style="color:var(--text-sub);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;"></span>
+    </button>
+    <button id="ctx-wgs" style="width:100%;text-align:left;padding:7px 11px;border:none;background:none;cursor:pointer;border-radius:var(--radius-md);display:flex;flex-direction:column;gap:2px;transition:background .15s;" onmouseover="this.style.background='var(--green-dim)'" onmouseout="this.style.background='none'">
+      <span class="mono-label" style="color:var(--green);">WGS84</span>
+      <span id="ctx-wgs-val" style="color:var(--text-sub);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;"></span>
+    </button>
+    <div style="height:1px;background:var(--border);margin:4px 0;"></div>
+    <button id="ctx-streetview" style="width:100%;text-align:left;padding:7px 11px;border:none;background:none;cursor:pointer;border-radius:var(--radius-md);display:flex;align-items:center;gap:6px;transition:background .15s;" onmouseover="this.style.background='rgba(255,185,95,0.1)'" onmouseout="this.style.background='none'">
+      <span style="font-size:14px;">📷</span>
+      <span class="mono-label" style="color:var(--amber);">開啟 Google 街景</span>
+    </button>
+  </div>
+
+  <!-- Save Modal -->
+  <div id="modal-save" class="modal-bg" style="display:none;">
+    <div class="modal-box">
+      <h3 id="modal-title" style="font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px;">儲存圖層</h3>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:13px;">建議名稱格式：MMDD…（例：0306北段）</p>
+      <input id="modal-name" type="text" style="width:100%;padding:10px 13px;font-size:14px;font-weight:700;text-align:center;margin-bottom:11px;" placeholder="輸入名稱...">
+      <div style="margin-bottom:11px;">
+        <div class="mono-label" style="letter-spacing:.1em;margin-bottom:6px;">期別（可覆蓋自動分類）</div>
+        <div style="display:flex;gap:6px;">
+          <button class="period-select-btn" data-p="" onclick="selectModalPeriod('')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;text-transform:uppercase;">AUTO</button>
+          <button class="period-select-btn" data-p="初" onclick="selectModalPeriod('初')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">初</button>
+          <button class="period-select-btn" data-p="中" onclick="selectModalPeriod('中')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">中</button>
+          <button class="period-select-btn" data-p="末" onclick="selectModalPeriod('末')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">末</button>
+        </div>
+      </div>
+      <div id="modal-status" style="display:none;padding:8px;background:var(--amber-dim);border:1px solid var(--amber-border);border-radius:var(--radius-md);color:var(--amber);font-size:11px;font-weight:600;margin-bottom:9px;">上傳中...</div>
+      <button id="modal-confirm" onclick="doUpload()" class="btn-accent" style="width:100%;padding:12px;font-size:13px;font-weight:700;border:1px solid var(--accent-border);">確認儲存</button>
+      <button onclick="closeModal()" style="width:100%;margin-top:7px;background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;font-weight:600;">取消</button>
+    </div>
+  </div>
+
+  <!-- CSV 欄位確認 Modal -->
+  <div id="modal-csv" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-width:460px;">
+      <h3 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;color:var(--text);margin-bottom:4px;">📊 CSV 匯入設定</h3>
+      <p id="csv-modal-enc" style="font-size:11px;color:var(--text-muted);margin-bottom:13px;">自動偵測編碼中…</p>
+      <div style="margin-bottom:11px;">
+        <div class="mono-label" style="letter-spacing:.1em;margin-bottom:5px;">圖層名稱</div>
+        <input id="csv-modal-name" type="text" style="width:100%;padding:9px 13px;font-size:14px;font-weight:700;" placeholder="輸入名稱...">
+      </div>
+      <div style="margin-bottom:11px;">
+        <div class="mono-label" style="letter-spacing:.1em;margin-bottom:8px;">座標欄位對應（EPSG:3826 → WGS84）</div>
+        <div style="display:flex;gap:8px;margin-bottom:7px;align-items:center;">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);width:60px;flex-shrink:0;">東坐標 X</span>
+          <select id="csv-sel-x" style="flex:1;background:var(--input-bg);border:1px solid var(--border);color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px;border-radius:var(--radius-md);"></select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:7px;align-items:center;">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);width:60px;flex-shrink:0;">北坐標 Y</span>
+          <select id="csv-sel-y" style="flex:1;background:var(--input-bg);border:1px solid var(--border);color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px;border-radius:var(--radius-md);"></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);width:60px;flex-shrink:0;">高程 Z<br><span style="font-size:9px;opacity:.6;">(選填)</span></span>
+          <select id="csv-sel-z" style="flex:1;background:var(--input-bg);border:1px solid var(--border);color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px 10px;border-radius:var(--radius-md);"></select>
+        </div>
+      </div>
+      <div style="margin-bottom:13px;">
+        <div class="mono-label" style="letter-spacing:.1em;margin-bottom:6px;">期別（可覆蓋自動分類）</div>
+        <div style="display:flex;gap:6px;">
+          <button class="period-select-btn" data-p="" onclick="selectModalPeriod('')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;text-transform:uppercase;">AUTO</button>
+          <button class="period-select-btn" data-p="初" onclick="selectModalPeriod('初')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">初</button>
+          <button class="period-select-btn" data-p="中" onclick="selectModalPeriod('中')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">中</button>
+          <button class="period-select-btn" data-p="末" onclick="selectModalPeriod('末')" style="flex:1;padding:7px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--input-bg);color:var(--text-muted);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;transition:all .2s;">末</button>
+        </div>
+      </div>
+      <div id="csv-modal-status" style="display:none;padding:8px;background:var(--amber-dim);border:1px solid var(--amber-border);border-radius:var(--radius-md);color:var(--amber);font-size:11px;font-weight:600;margin-bottom:9px;">上傳中...</div>
+      <button id="csv-modal-confirm" onclick="doCSVUpload()" class="btn-accent" style="width:100%;padding:12px;font-size:13px;font-weight:700;border:1px solid var(--accent-border);">確認轉換並上傳</button>
+      <button onclick="closeCSVModal()" style="width:100%;margin-top:7px;background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;font-weight:600;">取消</button>
+    </div>
+  </div>
+
+  <!-- Period config Modal -->
+  <div id="modal-period-config" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-width:370px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+        <div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;color:var(--text);">初/中/末 分界設定</h3>
+          <p class="mono-label" style="margin-top:3px;">依 MMDD 日期自動分類 · 全員共用</p>
+        </div>
+        <button onclick="closePeriodConfig()" class="btn-ghost" style="width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="padding:11px;background:var(--card-bg);border-radius:var(--radius-lg);border:1px solid var(--border);">
+          <div class="mono-label" style="margin-bottom:7px;">初 的範圍：從月初 到</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-sub);">MMDD ≤</span>
+            <input id="cfg-early-end" type="text" maxlength="4" style="width:70px;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);text-align:center;" placeholder="0305">
+            <span class="mono-label">（含當天）</span>
+          </div>
+          <div id="cfg-early-preview" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);margin-top:5px;font-weight:600;"></div>
+        </div>
+        <div style="padding:11px;background:var(--card-bg);border-radius:var(--radius-lg);border:1px solid var(--border);">
+          <div class="mono-label" style="margin-bottom:7px;">中 的範圍：初結束後 到</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-sub);">MMDD ≤</span>
+            <input id="cfg-mid-end" type="text" maxlength="4" style="width:70px;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);text-align:center;" placeholder="0320">
+            <span class="mono-label">（含當天）</span>
+          </div>
+          <div id="cfg-mid-preview" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);margin-top:5px;font-weight:600;"></div>
+        </div>
+        <div style="padding:11px;background:var(--card-bg);border-radius:var(--radius-lg);border:1px solid var(--border);">
+          <div class="mono-label" style="margin-bottom:4px;">末 的範圍：中結束後 以後</div>
+          <div id="cfg-late-preview" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);margin-top:4px;font-weight:600;"></div>
+        </div>
+      </div>
+      <div style="margin-top:13px;display:flex;gap:7px;">
+        <button onclick="applyPeriodConfig()" class="btn-accent" style="flex:1;padding:10px;font-size:12px;font-weight:700;border:1px solid var(--accent-border);">套用並儲存</button>
+        <button onclick="closePeriodConfig()" class="btn-ghost" style="flex:1;padding:10px;font-size:12px;">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats Modal -->
+  <div id="modal-stats" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-width:600px;max-height:92vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+      <div style="padding:18px 22px 14px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;color:var(--text);">團隊進度</div>
+          <div class="mono-label" style="margin-top:3px;">即時完工狀況</div>
+        </div>
+        <div style="display:flex;gap:7px;align-items:center;">
+          <button onclick="exportXlsx()" style="display:flex;align-items:center;gap:5px;padding:6px 12px;border-radius:var(--radius-md);border:1px solid var(--green-border);background:var(--green-dim);color:var(--green);cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;transition:all .2s;">📊 匯出</button>
+          <button onclick="closeStats()" class="btn-ghost" style="width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+        </div>
+      </div>
+      <div id="stats-period-tabs-wrap" style="padding:0 22px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;gap:4px;overflow-x:auto;">
+      </div>
+      <div style="padding:14px 22px;border-bottom:1px solid var(--border);flex-shrink:0;">
+        <div style="display:flex;gap:13px;align-items:center;">
+          <div class="donut-wrap" style="flex-shrink:0;">
+            <canvas id="donut-canvas" width="110" height="110"></canvas>
+            <div class="donut-center">
+              <div id="donut-pct" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:800;color:var(--accent);line-height:1;">0%</div>
+              <div class="mono-label" style="margin-top:2px;">完工率</div>
+            </div>
+          </div>
+          <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+            <div style="padding:10px 12px;border-radius:var(--radius-lg);background:var(--green-dim);border:1px solid var(--green-border);text-align:center;">
+              <div id="s-done" style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:800;color:var(--green);line-height:1;">0</div>
+              <div class="mono-label" style="color:var(--green);margin-top:3px;">已完工</div>
+            </div>
+            <div style="padding:10px 12px;border-radius:var(--radius-lg);background:var(--amber-dim);border:1px solid var(--amber-border);text-align:center;">
+              <div id="s-claimed" style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:800;color:var(--amber);line-height:1;">0</div>
+              <div class="mono-label" style="color:var(--amber);margin-top:3px;">進行中</div>
+            </div>
+            <div style="padding:10px 12px;border-radius:var(--radius-lg);background:var(--danger-dim);border:1px solid var(--danger-border);text-align:center;">
+              <div id="s-none" style="font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:800;color:var(--danger);line-height:1;">0</div>
+              <div class="mono-label" style="color:var(--danger);margin-top:3px;">未認領</div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span class="mono-label" style="letter-spacing:.12em;">OVERALL PROGRESS</span>
+            <span id="stats-total-label" class="mono-label">0 個圖層</span>
+          </div>
+          <div style="height:6px;border-radius:99px;background:rgba(255,255,255,0.05);overflow:hidden;display:flex;">
+            <div id="stats-bar-done" style="height:100%;background:var(--green);transition:width .6s cubic-bezier(.16,1,.3,1);width:0%;"></div>
+            <div id="stats-bar-claimed" style="height:100%;background:var(--amber);transition:width .6s cubic-bezier(.16,1,.3,1);width:0%;"></div>
+          </div>
+        </div>
+      </div>
+      <div id="stats-op-list" style="flex:1;overflow-y:auto;padding:13px 22px;display:flex;flex-direction:column;gap:9px;"></div>
+      <div style="padding:11px 22px;border-top:1px solid var(--border);flex-shrink:0;">
+        <button onclick="closeStats()" class="btn-ghost" style="width:100%;padding:9px;font-size:12px;border-radius:var(--radius-md);">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Modal -->
+  <div id="modal-audit" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-width:540px;max-height:86vh;display:flex;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:13px;flex-shrink:0;">
+        <div>
+          <h3 style="font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;color:var(--text);">操作紀錄</h3>
+          <p class="mono-label" style="margin-top:2px;">所有圖層操作歷史</p>
+        </div>
+        <button onclick="closeAudit()" class="btn-ghost" style="width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:9px;flex-shrink:0;">
+        <div class="chip active" data-afilter="all" onclick="setAuditFilter('all')">ALL</div>
+        <div class="chip" data-afilter="claimed" onclick="setAuditFilter('claimed')">認領</div>
+        <div class="chip" data-afilter="done" onclick="setAuditFilter('done')">完工</div>
+        <div class="chip" data-afilter="released" onclick="setAuditFilter('released')">釋出</div>
+        <div class="chip" data-afilter="renamed" onclick="setAuditFilter('renamed')">改名</div>
+        <div class="chip" data-afilter="created" onclick="setAuditFilter('created')">新增</div>
+        <div class="chip" data-afilter="deleted" onclick="setAuditFilter('deleted')">刪除</div>
+      </div>
+      <div id="audit-list" style="flex:1;overflow-y:auto;"></div>
+      <button onclick="closeAudit()" class="btn-ghost" style="width:100%;margin-top:11px;padding:10px;font-size:12px;border-radius:var(--radius-md);flex-shrink:0;">關閉</button>
+    </div>
+  </div>
+
+  <!-- Help Modal -->
+  <div id="modal-help" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-width:500px;max-height:88vh;overflow-y:auto;padding:22px 24px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;">
+        <div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:700;color:var(--text);">系統使用說明</div>
+          <div class="mono-label" style="margin-top:4px;">花蓮人行道圖資協作系統 · v6 + KML</div>
+        </div>
+        <button onclick="closeHelp()" class="btn-ghost" style="width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div class="help-section" style="background:var(--accent-dim);border:1px solid var(--accent-border);">
+          <div class="help-section-title" style="color:var(--accent);">🚀 01 · 基本作業流程</div>
+          <div class="help-section-body">
+            <p>① 右上角選擇作業員 ② 點選地圖圖層 ③ 認領 ④ 完工後標記 ⑤ 需要時釋出</p>
+          </div>
+        </div>
+        <div class="help-section" style="background:rgba(192,193,255,0.04);border:1px solid rgba(192,193,255,0.12);">
+          <div class="help-section-title" style="color:var(--accent);">📦 02 · 批次上傳點位圖層</div>
+          <div class="help-section-body">
+            <p>點擊「匯入點位圖層」可一次選擇多個 GeoJSON/CSV 檔案，系統會依序上傳並顯示進度條。</p>
+          </div>
+        </div>
+        <div class="help-section" style="background:var(--green-dim);border:1px solid var(--green-border);">
+          <div class="help-section-title" style="color:var(--green);">🗺 03 · KML 路網圖層</div>
+          <div class="help-section-body">
+            <p>● 點擊右下角「KML 路網圖層」面板展開</p>
+            <p>● 上傳 KML 後圖層預設隱藏，點 👁 開啟顯示</p>
+            <p>● 點顏色點可更換線段顏色，雙擊名稱可改名</p>
+            <p>● 「預覽消除」：將已有點位的路段從 KML 中扣除，顯示尚未作業的路段</p>
+          </div>
+        </div>
+        <div class="help-section" style="background:var(--amber-dim);border:1px solid var(--amber-border);">
+          <div class="help-section-title" style="color:var(--amber);">🏷️ 04 · 列表快速改期別</div>
+          <div class="help-section-body">
+            <p>每張圖層卡片左側有一個期別標籤，點擊後出現快選選單，可直接切換。</p>
+          </div>
+        </div>
+        <div class="help-section" style="background:var(--green-dim);border:1px solid var(--green-border);">
+          <div class="help-section-title" style="color:var(--green);">📝 05 · 備忘錄</div>
+          <div class="help-section-body">
+            <p>● 必須先選作業員才能新增備忘或留言</p>
+            <p>● ☑️ 標記已解決後不計入 Header 數量</p>
+          </div>
+        </div>
+      </div>
+      <button onclick="closeHelp()" class="btn-ghost" style="width:100%;margin-top:14px;padding:10px;font-size:12px;border-radius:var(--radius-md);">關閉</button>
+    </div>
+  </div>
+
+  <!-- Operator manager Modal -->
+  <div id="modal-op" class="modal-bg" style="display:none;">
+    <div class="modal-box" style="max-height:80vh;display:flex;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:13px;flex-shrink:0;">
+        <h3 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;color:var(--text);">人員管理</h3>
+        <button onclick="closeOpManager()" class="btn-ghost" style="width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);">✕</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:9px;flex-shrink:0;">
+        <input id="new-op-name" type="text" style="flex:1;padding:8px 12px;font-size:13px;font-weight:600;" placeholder="新作業員姓名">
+        <button onclick="addOperator()" class="btn-accent" style="padding:8px 14px;font-size:12px;font-weight:700;border:1px solid var(--accent-border);">新增</button>
+      </div>
+      <div id="op-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:5px;"></div>
+      <button onclick="closeOpManager()" class="btn-ghost" style="width:100%;margin-top:13px;padding:10px;font-size:12px;border-radius:var(--radius-md);flex-shrink:0;">關閉</button>
+    </div>
+  </div>
+
+  <!-- 專案 JS 模組 (按依賴順序載入) -->
+  <script src="config.js"></script>
+  <script src="utils.js"></script>
+  <script src="map.js"></script>
+  <script src="realtime.js"></script>
+  <script src="kml.js"></script>
+  <script src="memo.js"></script>
+  <script src="upload.js"></script>
+  <script src="ui.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>
