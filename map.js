@@ -123,6 +123,35 @@ function _nnSort(pts) {
   return sorted;
 }
 
+// ── Douglas-Peucker 路徑簡化：依原始走訪順序保留轉角形狀，只去除多餘密集點 ──
+function _douglasPeucker(pts, epsilon) {
+  if (pts.length < 3) return pts.slice();
+  function perpDist(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+    const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+    const cx = a[0] + t * dx, cy = a[1] + t * dy;
+    return Math.hypot(p[0] - cx, p[1] - cy);
+  }
+  function rdp(list) {
+    if (list.length < 3) return list;
+    let maxD = 0, idx = 0;
+    const first = list[0], last = list[list.length - 1];
+    for (let i = 1; i < list.length - 1; i++) {
+      const d = perpDist(list[i], first, last);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > epsilon) {
+      const left = rdp(list.slice(0, idx + 1));
+      const right = rdp(list.slice(idx));
+      return left.slice(0, -1).concat(right);
+    }
+    return [first, last];
+  }
+  return rdp(pts);
+}
+
 // ── 線性回歸與主成分擬合 (PCA Trend Fitting)：將散點直接收斂為單一擬合直線/趨勢線 ──
 function _fitLinearTrendLine(pts) {
   if (!pts || pts.length === 0) return [];
@@ -257,8 +286,10 @@ function addPts(row, sd) {
       return;
     }
 
-    // 擬合線性回歸 / 主成分趨勢線 (直接收斂為單一貫穿直線)
-    const trendPts = _fitLinearTrendLine(allPts);
+    // 依原始走訪順序簡化路徑 (Douglas-Peucker)：保留轉角，去除多餘密集點
+    // epsilon 約 1.5 公尺（以經緯度換算，適用於台灣緯度附近）
+    const RDP_EPSILON = 0.000015;
+    const trendPts = _douglasPeucker(allPts, RDP_EPSILON);
     if (trendPts.length === 1) {
       L.circleMarker([trendPts[0][1], trendPts[0][0]], {
         radius: 5, fillColor: color, color: '#ffffff',
