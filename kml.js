@@ -6,7 +6,7 @@ var kmlLayers   = [];
 var kmlPolylines = {};
 var roadPanelOpen = false;
 var kmlDiffLayer  = null;
-var KML_COLORS = ['#94a3b8','#c0c1ff','#ffb95f','#4edea3','#ff6b7a','#ec4899','#06b6d4','#f97316','#ffffff'];
+var KML_COLORS = ['#94a3b8','#c0c1ff','#ffb95f','#4edea3','#ff6b7a','#ec4899','#06b6d4','#f97316','#ffffff','#a3e635','#facc15','#38bdf8','#8b5cf6','#f43f5e','#14b8a6','#eab308','#84cc16','#fb7185'];
 var _colorTargetId = null;
 
 function _getKml(id) { return kmlLayers.filter(x => x.id === id)[0] || null; }
@@ -141,6 +141,19 @@ function openColorPopover(entryId, anchorEl) {
     s.onclick = () => { applyKmlColor(entryId, c); pop.style.display = 'none'; };
     pop.appendChild(s);
   });
+  // ── 自訂調色盤：不受限於預設色，可選任意顏色 ──
+  const isPreset = KML_COLORS.some(c => c.toLowerCase() === (cur || '').toLowerCase());
+  const wrap = document.createElement('label');
+  wrap.className = 'color-preset color-custom' + (!isPreset && cur ? ' sel' : '');
+  wrap.title = '自訂顏色';
+  wrap.style.background = (!isPreset && cur) ? cur : 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)';
+  const picker = document.createElement('input');
+  picker.type = 'color'; picker.value = (cur && /^#[0-9a-fA-F]{6}$/.test(cur)) ? cur : '#ffffff';
+  picker.className = 'color-custom-input';
+  picker.oninput = () => { wrap.style.background = picker.value; };
+  picker.onchange = () => { applyKmlColor(entryId, picker.value); pop.style.display = 'none'; };
+  wrap.appendChild(picker);
+  pop.appendChild(wrap);
   const rect = anchorEl.getBoundingClientRect();
   pop.style.left = Math.min(rect.left, window.innerWidth - 180) + 'px';
   pop.style.top  = (rect.bottom + 4) + 'px';
