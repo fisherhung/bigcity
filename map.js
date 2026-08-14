@@ -1,15 +1,19 @@
 // ══════════════════════════════════════════════
-// ── 地圖模組 (map.js) - 修復版 ──
+// ── 地圖模組 (map.js) ──
 // ══════════════════════════════════════════════
-
-// 安全讀取全域變數 / 防呆預設值
-const _DEFAULT_BRIGHTNESS = typeof DEFAULT_BRIGHTNESS !== 'undefined' ? DEFAULT_BRIGHTNESS : 0.9;
 
 const NLSC_URL  = 'https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}';
 const NLSC_DARK = 'https://wmts.nlsc.gov.tw/wmts/EMAP5/default/GoogleMapsCompatible/{z}/{y}/{x}';
-const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJgCC==';
+// 修正：原本的 BLANK 其實是半透明「亮綠色」1x1 像素（RGBA 0,255,0,127），
+// 導致圖磚要不到資料時會整格塗成綠色色塊。改成真正透明的 1x1 PNG。
+const BLANK = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==';
 
-const _TILE_VER = Date.now();
+// Session-unique cache buster — forces fresh tile requests
+// 修正：改成固定版本字串（而非 Date.now()），讓瀏覽器能正常快取圖磚。
+// 之後若真的需要強制圖磚更新，手動把這串日期改掉即可（不要用 Date.now()，
+// 那樣每次重新整理都會讓所有圖磚快取失效，暴增對 NLSC 伺服器的請求量，
+// 反而更容易觸發逾時/限流，畫面上大片綠色色塊就是這樣來的）。
+const _TILE_VER = '2026-08-14';
 
 function buildTile(dark) {
   const baseUrl = dark ? NLSC_DARK : NLSC_URL;
@@ -21,21 +25,17 @@ function buildTile(dark) {
 }
 
 function applyBrightness(val) {
-  if (typeof map === 'undefined' || !map || !map.getPane) return;
+  if (typeof map === 'undefined' || !map.getPane) return;
   const pane = map.getPane('tilePane');
   if (pane) pane.style.filter = `brightness(${val})`;
 }
 
 function initMap() {
-  if (typeof L === 'undefined') {
-    console.error('Leaflet (L) 未載入！');
-    return;
-  }
-
   map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.8039, 120.9647], 14);
   tileLayer = buildTile(true).addTo(map);
   L.control.zoom({ position: 'topright' }).addTo(map);
 
+  // KEY FIX: remove tilePane filter during zoom to prevent GPU compositing tearing
   map.on('zoomstart', function() {
     const pane = map.getPane('tilePane');
     if (pane) { pane._brightnessFilter = pane.style.filter; pane.style.filter = ''; }
@@ -45,60 +45,50 @@ function initMap() {
     if (pane && pane._brightnessFilter !== undefined) pane.style.filter = pane._brightnessFilter;
   });
 
-  applyBrightness(_DEFAULT_BRIGHTNESS);
+  // 套用預設亮度 90%
+  applyBrightness(DEFAULT_BRIGHTNESS);
 
   // 右鍵選單
   const ctxMenu = document.getElementById('ctx-menu');
-  if (ctxMenu) {
-    map.on('contextmenu', e => {
-      e.originalEvent.preventDefault();
-      const lat = e.latlng.lat, lng = e.latlng.lng;
-      const [east, north] = typeof to3826 === 'function' ? to3826(lng, lat) : [0, 0];
-      _ctxCoord = { lat, lng, east, north };
-      const el97 = document.getElementById('ctx-97-val');
-      const elWgs = document.getElementById('ctx-wgs-val');
-      if (el97) el97.innerText = `E ${east.toFixed(3)}, N ${north.toFixed(3)}`;
-      if (elWgs) elWgs.innerText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-      const mx = e.originalEvent.clientX, my = e.originalEvent.clientY;
-      ctxMenu.style.left = (mx + 240 > window.innerWidth ? mx - 240 : mx) + 'px';
-      ctxMenu.style.top  = (my + 120 > window.innerHeight ? my - 120 : my) + 'px';
-      ctxMenu.style.display = 'block';
-    });
-
-    const c97 = document.getElementById('ctx-97');
-    const cwgs = document.getElementById('ctx-wgs');
-    const csv = document.getElementById('ctx-streetview');
-    if (c97 && typeof copyCoord === 'function') c97.addEventListener('click', () => copyCoord('97'));
-    if (cwgs && typeof copyCoord === 'function') cwgs.addEventListener('click', () => copyCoord('wgs'));
-    if (csv && typeof openStreetView === 'function') csv.addEventListener('click', openStreetView);
-    document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) ctxMenu.style.display = 'none'; });
-    map.on('click', () => ctxMenu.style.display = 'none');
-  }
+  map.on('contextmenu', e => {
+    e.originalEvent.preventDefault();
+    const lat = e.latlng.lat, lng = e.latlng.lng;
+    const [east, north] = to3826(lng, lat);
+    _ctxCoord = { lat, lng, east, north };
+    document.getElementById('ctx-97-val').innerText = `E ${east.toFixed(3)}, N ${north.toFixed(3)}`;
+    document.getElementById('ctx-wgs-val').innerText = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    const mx = e.originalEvent.clientX, my = e.originalEvent.clientY;
+    ctxMenu.style.left = (mx + 240 > window.innerWidth ? mx - 240 : mx) + 'px';
+    ctxMenu.style.top  = (my + 120 > window.innerHeight ? my - 120 : my) + 'px';
+    ctxMenu.style.display = 'block';
+  });
+  document.getElementById('ctx-97').addEventListener('click', () => copyCoord('97'));
+  document.getElementById('ctx-wgs').addEventListener('click', () => copyCoord('wgs'));
+  document.getElementById('ctx-streetview').addEventListener('click', openStreetView);
+  document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) ctxMenu.style.display = 'none'; });
+  map.on('click', () => ctxMenu.style.display = 'none');
 }
 
 // ── 亮度滑桿 ──
 document.addEventListener('DOMContentLoaded', () => {
   const slider     = document.getElementById('map-brightness');
   const valDisplay = document.getElementById('map-brightness-val');
-  if (slider && valDisplay) {
-    slider.value = _DEFAULT_BRIGHTNESS;
-    valDisplay.innerText = Math.round(_DEFAULT_BRIGHTNESS * 100) + '%';
+  // 設定預設值
+  slider.value = DEFAULT_BRIGHTNESS;
+  valDisplay.innerText = Math.round(DEFAULT_BRIGHTNESS * 100) + '%';
 
-    slider.addEventListener('input', e => {
-      const val = parseFloat(e.target.value);
-      valDisplay.innerText = Math.round(val * 100) + '%';
-      if (typeof applyBrightness === 'function') applyBrightness(val);
-    });
-  }
+  slider.addEventListener('input', e => {
+    const val = parseFloat(e.target.value);
+    valDisplay.innerText = Math.round(val * 100) + '%';
+    if (typeof applyBrightness === 'function') applyBrightness(val);
+  });
 });
 
 function setOnline(on) {
   const dot = document.getElementById('db-dot'), lbl = document.getElementById('db-label');
   if (dot) { dot.style.background = on ? 'var(--accent)' : 'var(--danger)'; dot.classList.toggle('live', false); }
   if (lbl) { lbl.innerText = on ? 'LIVE' : 'OFFLINE'; lbl.style.color = on ? 'var(--accent)' : 'var(--danger)'; }
-  if (typeof rtLog === 'function') {
-    rtLog(on ? '✓ Supabase 連線成功，等待 RT channel…' : '✗ DB 連線失敗', on ? '#4edea3' : '#ff6b7a');
-  }
+  rtLog(on ? '✓ Supabase 連線成功，等待 RT channel…' : '✗ DB 連線失敗', on ? '#4edea3' : '#ff6b7a');
 }
 
 // ── 資產視覺層 ──
@@ -107,35 +97,46 @@ function addAsset(row, sd) {
   row.type === 'img' ? addImg(row, sd) : addPts(row, sd);
 }
 
-function safeSColor(status) {
-  return typeof sColor === 'function' ? sColor(status) : '#3b82f6';
-}
-
 function addImg(row, sd) {
   if (assets.has(row.id)) return;
   const b = row.bounds_json;
-  if (!b || b.w == null || b.e == null || b.s == null || b.n == null) return;
-  const sw = typeof to84 === 'function' ? to84(b.w, b.s) : [b.w, b.s];
-  const ne = typeof to84 === 'function' ? to84(b.e, b.n) : [b.e, b.n];
+  if (b.w == null || b.e == null || b.s == null || b.n == null) return;
+  const sw = to84(b.w, b.s), ne = to84(b.e, b.n);
   function mkBounds() { return L.latLngBounds(L.latLng(sw[1], sw[0]), L.latLng(ne[1], ne[0])); }
   const overlay = L.imageOverlay(row.img_url || row.img_data || '', mkBounds(), { opacity: 0.85, interactive: false }).addTo(map);
-  const rect = L.rectangle(mkBounds(), { color: safeSColor(sd?.status), weight: 2, fill: false, interactive: true }).addTo(map);
+  const rect = L.rectangle(mkBounds(), { color: sColor(sd?.status), weight: 2, fill: false, interactive: true }).addTo(map);
   rect.bindTooltip(row.display_name, { className: 'tt', sticky: true, permanent: false });
-  const fn = () => { if (typeof openPanel === 'function') openPanel(row.id); };
+  const fn = () => openPanel(row.id);
   rect.on('click', fn);
   rect.on('mouseover', () => rect.setStyle({ color: '#8de8ff', weight: 4 }));
-  rect.on('mouseout',  () => rect.setStyle({ color: safeSColor(sd?.status), weight: 2 }));
+  rect.on('mouseout',  () => rect.setStyle({ color: sColor(sd?.status), weight: 2 }));
   assets.set(row.id, { type: 'img', rect, overlay, mkBounds, _clickHandler: fn, name: row.display_name, display_name: row.display_name, statusData: sd, manual_period: row.manual_period || '' });
 }
 
-// ── 1. 局部公尺換算 ──
+// ── 最近鄰排序：讓散點連成最短路徑折線 ──
+function _nnSort(pts) {
+  if (pts.length <= 2) return pts;
+  const rem = pts.slice(), sorted = [rem.splice(0, 1)[0]];
+  while (rem.length) {
+    const last = sorted[sorted.length - 1];
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < rem.length; i++) {
+      const d = Math.hypot(rem[i][0] - last[0], rem[i][1] - last[1]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    sorted.push(rem.splice(bi, 1)[0]);
+  }
+  return sorted;
+}
+
+// ── 局部公尺換算：以點集平均緯度換算經緯度→公尺的比例尺，讓距離計算不失真 ──
 function _localMeterScale(pts) {
   let sumLat = 0; pts.forEach(p => sumLat += p[1]);
   const meanLat = sumLat / pts.length;
   return { mLat: 110574, mLng: 111320 * Math.cos(meanLat * Math.PI / 180) };
 }
 
-// ── 2. 網格降採樣 ──
+// ── 網格降採樣：以固定公尺網格取中心點，合併密集/重複測量、消除側向雜訊 ──
 function _gridDownsampleM(ptsM, cellM) {
   const buckets = new Map();
   ptsM.forEach(p => {
@@ -152,7 +153,99 @@ function _gridDownsampleM(ptsM, cellM) {
   return out;
 }
 
-// ── 3. Douglas-Peucker 簡化 ──
+// ── 建 k 近鄰候選邊後取最小生成樹 (Prim's)：不依賴原始順序，純粹以空間距離建立骨架 ──
+function _buildMST(pts, k) {
+  const n = pts.length;
+  const adj = Array.from({ length: n }, () => []);
+  const edgeSet = new Map();
+  for (let i = 0; i < n; i++) {
+    const dists = [];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      dists.push([Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]), j]);
+    }
+    dists.sort((a, b) => a[0] - b[0]);
+    for (let m = 0; m < Math.min(k, dists.length); m++) {
+      const [d, j] = dists[m];
+      const key = i < j ? i + '_' + j : j + '_' + i;
+      if (!edgeSet.has(key) || edgeSet.get(key) > d) edgeSet.set(key, d);
+    }
+  }
+  edgeSet.forEach((d, key) => {
+    const [a, b] = key.split('_').map(Number);
+    adj[a].push([b, d]); adj[b].push([a, d]);
+  });
+
+  const inTree = new Uint8Array(n), mstAdj = Array.from({ length: n }, () => []);
+  if (n === 0) return mstAdj;
+  inTree[0] = 1;
+  let treeSize = 1;
+  const cand = [];
+  const addNode = u => adj[u].forEach(([v, d]) => { if (!inTree[v]) cand.push([d, u, v]); });
+  addNode(0);
+  while (treeSize < n && cand.length) {
+    cand.sort((a, b) => a[0] - b[0]);
+    const [d, u, v] = cand.shift();
+    if (inTree[v]) continue;
+    inTree[v] = 1; treeSize++;
+    mstAdj[u].push([v, d]); mstAdj[v].push([u, d]);
+    addNode(v);
+  }
+  // k 太小造成圖不連通時，剩餘節點強制接到最近的已連通節點
+  if (treeSize < n) {
+    for (let v = 0; v < n; v++) {
+      if (inTree[v]) continue;
+      let bd = Infinity, bu = -1;
+      for (let u = 0; u < n; u++) {
+        if (!inTree[u]) continue;
+        const d = Math.hypot(pts[u][0] - pts[v][0], pts[u][1] - pts[v][1]);
+        if (d < bd) { bd = d; bu = u; }
+      }
+      if (bu >= 0) { mstAdj[bu].push([v, bd]); mstAdj[v].push([bu, bd]); inTree[v] = 1; }
+    }
+  }
+  return mstAdj;
+}
+
+// ── 樹的直徑（最長路徑）：兩次 BFS 找端點，自動排除側量產生的旁支 ──
+function _treeDiameterPath(mstAdj) {
+  const n = mstAdj.length;
+  if (n === 0) return [];
+  function farthestFrom(src) {
+    const dist = new Float64Array(n).fill(-1), prev = new Int32Array(n).fill(-1);
+    dist[src] = 0;
+    const stack = [src];
+    while (stack.length) {
+      const u = stack.pop();
+      mstAdj[u].forEach(([v, d]) => { if (dist[v] < 0) { dist[v] = dist[u] + d; prev[v] = u; stack.push(v); } });
+    }
+    let far = src, maxD = 0;
+    for (let i = 0; i < n; i++) if (dist[i] > maxD) { maxD = dist[i]; far = i; }
+    return { far, prev };
+  }
+  const r1 = farthestFrom(0);
+  const r2 = farthestFrom(r1.far);
+  const path = [];
+  let cur = r2.far;
+  while (cur !== -1) { path.push(cur); cur = r2.prev[cur]; }
+  return path.reverse();
+}
+
+// ── 散點路徑重建：不依賴原始順序，直接用空間結構重建主幹路徑 ──
+function _reconstructPathFromScatter(pts) {
+  if (pts.length < 3) return pts.slice();
+  const scale = _localMeterScale(pts);
+  const ptsM = pts.map(p => [p[0] * scale.mLng, p[1] * scale.mLat]);
+  const downsampled = _gridDownsampleM(ptsM, 2.5); // 2.5 公尺網格
+  if (downsampled.length < 3) return pts.slice();
+  const mstAdj = _buildMST(downsampled, 6);
+  const pathIdx = _treeDiameterPath(mstAdj);
+  const pathM = pathIdx.map(i => downsampled[i]);
+  const simplifiedM = _douglasPeucker(pathM, 1.2); // 1.2 公尺容許誤差
+  return simplifiedM.map(p => [p[0] / scale.mLng, p[1] / scale.mLat]);
+}
+
+// ── Douglas-Peucker 路徑簡化：依走訪順序保留轉角形狀，只去除多餘密集點 ──
 function _douglasPeucker(pts, epsilon) {
   if (pts.length < 3) return pts.slice();
   function perpDist(p, a, b) {
@@ -181,114 +274,103 @@ function _douglasPeucker(pts, epsilon) {
   return rdp(pts);
 }
 
-// ── 4. 拓撲網絡拆解多路徑 ──
-function _reconstructMultiPathsFromScatter(pts) {
-  if (pts.length < 2) return [pts.slice()];
-  
-  const scale = _localMeterScale(pts);
-  const ptsM = pts.map(p => [p[0] * scale.mLng, p[1] * scale.mLat]);
-  
-  const nodes = _gridDownsampleM(ptsM, 2.0);
-  const n = nodes.length;
-  if (n < 2) return [pts.slice()];
+// ── 線性回歸與主成分擬合 (PCA Trend Fitting)：將散點直接收斂為單一擬合直線/趨勢線 ──
+function _fitLinearTrendLine(pts) {
+  if (!pts || pts.length === 0) return [];
+  if (pts.length === 1) return pts;
 
-  const maxEdgeDist = 25.0;
-  const adj = Array.from({ length: n }, () => []);
-  const edgeSet = new Set();
+  // 1. 計算重心 (Center of Mass)
+  let sumLng = 0, sumLat = 0;
+  pts.forEach(p => { sumLng += p[0]; sumLat += p[1]; });
+  const meanLng = sumLng / pts.length;
+  const meanLat = sumLat / pts.length;
 
-  for (let i = 0; i < n; i++) {
-    const dists = [];
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      const d = Math.hypot(nodes[i][0] - nodes[j][0], nodes[i][1] - nodes[j][1]);
-      if (d <= maxEdgeDist) dists.push({ j, d });
-    }
-    dists.sort((a, b) => a.d - b.d);
-    for (let k = 0; k < Math.min(3, dists.length); k++) {
-      const { j, d } = dists[k];
-      const key = i < j ? `${i}_${j}` : `${j}_${i}`;
-      if (!edgeSet.has(key)) {
-        edgeSet.add(key);
-        adj[i].push(j);
-        adj[j].push(i);
-      }
-    }
-  }
-
-  const visitedEdges = new Set();
-  const rawSegmentsM = [];
-
-  for (let i = 0; i < n; i++) {
-    const degree = adj[i].length;
-    if (degree !== 2 || degree === 0) {
-      adj[i].forEach(next => {
-        const edgeKey = i < next ? `${i}_${next}` : `${next}_${i}`;
-        if (visitedEdges.has(edgeKey)) return;
-
-        visitedEdges.add(edgeKey);
-        const segment = [nodes[i], nodes[next]];
-        let prev = i;
-        let curr = next;
-
-        while (adj[curr].length === 2) {
-          const neighbors = adj[curr];
-          const unvisitedNext = neighbors.find(nbr => nbr !== prev);
-          if (!unvisitedNext) break;
-
-          const nextEdgeKey = curr < unvisitedNext ? `${curr}_${unvisitedNext}` : `${unvisitedNext}_${curr}`;
-          if (visitedEdges.has(nextEdgeKey)) break;
-
-          visitedEdges.add(nextEdgeKey);
-          segment.push(nodes[unvisitedNext]);
-          prev = curr;
-          curr = unvisitedNext;
-        }
-
-        if (segment.length >= 2) {
-          rawSegmentsM.push(segment);
-        }
-      });
-    }
-  }
-
-  for (let i = 0; i < n; i++) {
-    adj[i].forEach(next => {
-      const edgeKey = i < next ? `${i}_${next}` : `${next}_${i}`;
-      if (!visitedEdges.has(edgeKey)) {
-        visitedEdges.add(edgeKey);
-        const segment = [nodes[i], nodes[next]];
-        let prev = i;
-        let curr = next;
-        while (adj[curr].length === 2) {
-          const unvisitedNext = adj[curr].find(nbr => nbr !== prev);
-          if (!unvisitedNext) break;
-          const nextEdgeKey = curr < unvisitedNext ? `${curr}_${unvisitedNext}` : `${unvisitedNext}_${curr}`;
-          if (visitedEdges.has(nextEdgeKey)) break;
-          visitedEdges.add(nextEdgeKey);
-          segment.push(nodes[unvisitedNext]);
-          prev = curr;
-          curr = unvisitedNext;
-        }
-        if (segment.length >= 2) rawSegmentsM.push(segment);
-      }
-    });
-  }
-
-  const finalPaths = [];
-  rawSegmentsM.forEach(segM => {
-    const simplifiedM = _douglasPeucker(segM, 1.0);
-    if (simplifiedM.length >= 2) {
-      const segWGS = simplifiedM.map(p => [p[0] / scale.mLng, p[1] / scale.mLat]);
-      finalPaths.push(segWGS);
-    }
+  // 2. 計算主成分向量 (PCA Principal Axis)
+  let xx = 0, yy = 0, xy = 0;
+  pts.forEach(p => {
+    const dx = p[0] - meanLng;
+    const dy = p[1] - meanLat;
+    xx += dx * dx;
+    yy += dy * dy;
+    xy += dx * dy;
   });
 
-  return finalPaths.length > 0 ? finalPaths : [pts.slice()];
+  const theta = 0.5 * Math.atan2(2 * xy, xx - yy);
+  const vx = Math.cos(theta);
+  const vy = Math.sin(theta);
+
+  // 3. 投影所有點至主向量軸 (t 軸) 並排序
+  const projected = pts.map(p => {
+    const dx = p[0] - meanLng;
+    const dy = p[1] - meanLat;
+    const t = dx * vx + dy * vy;
+    return { t, orig: p };
+  }).sort((a, b) => a.t - b.t);
+
+  // 4. 平滑中心軸生成單一順暢直線/趨勢線
+  const windowSize = Math.max(3, Math.floor(projected.length / 10));
+  const half = Math.floor(windowSize / 2);
+  const fittedLine = [];
+
+  for (let i = 0; i < projected.length; i += Math.max(1, Math.floor(windowSize / 3))) {
+    const start = Math.max(0, i - half);
+    const end = Math.min(projected.length, i + half + 1);
+    let sLng = 0, sLat = 0, cnt = 0;
+    for (let j = start; j < end; j++) {
+      sLng += projected[j].orig[0];
+      sLat += projected[j].orig[1];
+      cnt++;
+    }
+    fittedLine.push([sLng / cnt, sLat / cnt]);
+  }
+
+  // 確保端點延伸至全區域起終點
+  const startPt = [meanLng + projected[0].t * vx, meanLat + projected[0].t * vy];
+  const endPt = [meanLng + projected[projected.length - 1].t * vx, meanLat + projected[projected.length - 1].t * vy];
+  if (fittedLine.length >= 2) {
+    fittedLine[0] = startPt;
+    fittedLine[fittedLine.length - 1] = endPt;
+  } else {
+    return [startPt, endPt];
+  }
+
+  return fittedLine;
+}
+
+// ── DBSCAN 輕量聚類：依空間分群 ──
+function _clusterPoints(pts, eps) {
+  const n = pts.length, visited = new Uint8Array(n), clId = new Int32Array(n).fill(-1);
+  let cid = 0;
+  const neighbors = i => {
+    const res = [];
+    for (let j = 0; j < n; j++) {
+      if (Math.hypot(pts[j][0]-pts[i][0], pts[j][1]-pts[i][1]) <= eps) res.push(j);
+    }
+    return res;
+  };
+  for (let i = 0; i < n; i++) {
+    if (visited[i]) continue;
+    visited[i] = 1;
+    const nb = neighbors(i);
+    if (nb.length < 2) { clId[i] = -1; continue; }  // noise
+    clId[i] = cid;
+    const stack = nb.filter(j => j !== i);
+    while (stack.length) {
+      const j = stack.pop();
+      if (!visited[j]) { visited[j] = 1; const nb2 = neighbors(j); if (nb2.length >= 2) nb2.forEach(k => { if (!visited[k]) stack.push(k); }); }
+      if (clId[j] < 0) clId[j] = cid;
+    }
+    cid++;
+  }
+  // group by cluster; noise points each form own micro-cluster
+  const groups = {};
+  pts.forEach((p, i) => { const k = clId[i] >= 0 ? clId[i] : 'n'+i; if (!groups[k]) groups[k] = []; groups[k].push(p); });
+  return Object.values(groups);
 }
 
 function addPts(row, sd) {
   const group = L.featureGroup().addTo(map);
-  const color = safeSColor(sd?.status || 'none');
+  const color = sColor(sd?.status || 'none');
   let loaded = false;
 
   async function ensureLoaded() {
@@ -301,18 +383,18 @@ function addPts(row, sd) {
       if (Array.isArray(raw)) features = raw; else if (raw?.type === 'FeatureCollection') features = raw.features || []; else if (raw?.type === 'Feature') features = [raw];
     }
 
+    // Collect valid [lng, lat] pairs
     const allPts = [];
     features.forEach(f => {
       let lat = null, lng = null;
       if (f.geometry?.coordinates) {
         const cx = parseFloat(f.geometry.coordinates[0]), cy = parseFloat(f.geometry.coordinates[1]);
         if (!isNaN(cx) && !isNaN(cy)) {
-          if (typeof looksWGS84 === 'function' && looksWGS84(cx, cy)) { lng = cx; lat = cy; }
-          else if (typeof to84 === 'function') { const w = to84(cx, cy); lng = w[0]; lat = w[1]; }
-          else { lng = cx; lat = cy; }
+          if (looksWGS84(cx, cy)) { lng = cx; lat = cy; }
+          else { const w = to84(cx, cy); lng = w[0]; lat = w[1]; }
         }
       }
-      if (lat === null && typeof parseDMS === 'function') {
+      if (lat === null) {
         const p = f.properties || {};
         const pLat = parseDMS(p['緯度'] ?? p['lat'] ?? p['latitude']);
         const pLng = parseDMS(p['經度'] ?? p['lng'] ?? p['longitude']);
@@ -326,34 +408,30 @@ function addPts(row, sd) {
       return;
     }
 
-    // ── 多線段繪製（防呆 renderer 設定） ──
-    const multiPaths = _reconstructMultiPathsFromScatter(allPts);
+    // 不依賴原始順序，直接由散點的空間結構重建主幹路徑（格網降採樣 → MST → 取最長路徑 → 化簡）
+    const trendPts = _reconstructPathFromScatter(allPts);
+    if (trendPts.length === 1) {
+      L.circleMarker([trendPts[0][1], trendPts[0][0]], {
+        radius: 5, fillColor: color, color: '#ffffff',
+        weight: 1.5, fillOpacity: 0.9, renderer: canvasRenderer
+      }).addTo(group);
+    } else if (trendPts.length >= 2) {
+      const latLngs = trendPts.map(p => [p[1], p[0]]);
+      // 外層光暈底線 (Glow Line)
+      const bgLine = L.polyline(latLngs, {
+        color, weight: 8, opacity: 0.35,
+        lineJoin: 'round', lineCap: 'round'
+      }).addTo(group);
+      bgLine.options.isBorder = true;
 
-    multiPaths.forEach(path => {
-      if (path.length === 1) {
-        const markerOpts = {
-          radius: 4, fillColor: color, color: '#ffffff',
-          weight: 1, fillOpacity: 0.9
-        };
-        if (typeof canvasRenderer !== 'undefined') markerOpts.renderer = canvasRenderer;
-        L.circleMarker([path[0][1], path[0][0]], markerOpts).addTo(group);
-      } else if (path.length >= 2) {
-        const latLngs = path.map(p => [p[1], p[0]]);
-
-        const bgLine = L.polyline(latLngs, {
-          color, weight: 8, opacity: 0.35,
-          lineJoin: 'round', lineCap: 'round'
-        }).addTo(group);
-        bgLine.options.isBorder = true;
-
-        const mainLine = L.polyline(latLngs, {
-          color, weight: 4.5, opacity: 0.95,
-          lineJoin: 'round', lineCap: 'round',
-          className: 'csv-glow-line'
-        }).addTo(group);
-        mainLine.options.isBorder = false;
-      }
-    });
+      // 主體擬合直線 / 趨勢線 (Core Trend Line)
+      const mainLine = L.polyline(latLngs, {
+        color, weight: 5, opacity: 0.95,
+        lineJoin: 'round', lineCap: 'round',
+        className: 'csv-glow-line'
+      }).addTo(group);
+      mainLine.options.isBorder = false;
+    }
 
     const a = assets.get(row.id);
     if (a) {
@@ -364,7 +442,7 @@ function addPts(row, sd) {
   }
 
   group.bindTooltip(row.display_name, { className: 'tt', sticky: true });
-  const fn = () => { ensureLoaded(); if (typeof openPanel === 'function') openPanel(row.id); };
+  const fn = () => { ensureLoaded(); openPanel(row.id); };
   group.on('click', fn);
   group.on('mouseover', () => group.eachLayer(l => {
     if (l.setStyle) l.setStyle(l instanceof L.Polyline && !(l instanceof L.Polygon)
@@ -372,7 +450,7 @@ function addPts(row, sd) {
       : { fillColor: '#8de8ff', color: '#fff', radius: 7 });
   }));
   group.on('mouseout', () => group.eachLayer(l => {
-    const curC = safeSColor(sd?.status || 'none');
+    const curC = sColor(sd?.status || 'none');
     if (l.setStyle) l.setStyle(l instanceof L.Polyline && !(l instanceof L.Polygon)
       ? { color: curC, weight: l.options.isBorder ? 7 : 4.5, opacity: l.options.isBorder ? 0.35 : 0.95 }
       : { fillColor: curC, color: '#fff', radius: 5 });
@@ -390,26 +468,28 @@ function removeLayer(id) {
 
 function applyMapStyles() {
   let csw = null, cne = null;
-  const fitNeeded = (typeof curOp !== 'undefined' && curOp !== 'all') || (typeof activePeriod !== 'undefined' && activePeriod !== 'all');
+  const fitNeeded = curOp !== 'all' || activePeriod !== 'all';
   assets.forEach(a => {
     const op = a.statusData?.operator_name || null, st = a.statusData?.status || 'none';
-    const period = typeof effectivePeriod === 'function' ? effectivePeriod(a) : 'all';
-    const opMatch     = (typeof curOp === 'undefined' || curOp === 'all') || (op === curOp && (st === 'claimed' || st === 'done'));
-    const periodMatch = (typeof activePeriod === 'undefined' || activePeriod === 'all') || period === activePeriod;
+    const period = effectivePeriod(a);
+    const opMatch     = curOp === 'all' || (op === curOp && (st === 'claimed' || st === 'done'));
+    const periodMatch = activePeriod === 'all' || period === activePeriod;
     const show = opMatch && periodMatch;
     if (a.type === 'img') {
       a.overlay.setOpacity(show ? 0.85 : 0);
-      a.rect.setStyle({ color: safeSColor(st), opacity: show ? 1 : 0, fillOpacity: 0 });
+      a.rect.setStyle({ color: sColor(st), opacity: show ? 1 : 0, fillOpacity: 0 });
       if (show) a.rect.on('click', a._clickHandler); else a.rect.off('click', a._clickHandler);
     } else {
-      const c = safeSColor(st);
+      const c = sColor(st);
       a.visual.eachLayer(l => {
         if (!l.setStyle) return;
         if (l instanceof L.Polyline && !(l instanceof L.Polygon)) {
+          // Polyline layer
           const w = l.options.isBorder ? 7 : 4.5;
           const op = l.options.isBorder ? 0.35 : 0.95;
           l.setStyle({ color: c, opacity: show ? op : 0, weight: w });
         } else {
+          // CircleMarker fallback
           l.setStyle({ fillColor: c, color: c, fillOpacity: show ? 0.85 : 0, opacity: show ? 0.85 : 0 });
         }
       });
@@ -426,8 +506,9 @@ function applyMapStyles() {
   if (fitNeeded && csw && cne) map.fitBounds(L.latLngBounds(csw, cne), { padding: [80, 80], maxZoom: 17, animate: false });
 }
 
+// ── 地圖 Pulse Beacon 特效 ──
 function pulseBeaconPts(a) {
-  const origColor = safeSColor(a.statusData?.status || 'none');
+  const origColor = sColor(a.statusData?.status || 'none');
   let cnt = 0;
   const fl = setInterval(() => {
     cnt++;
@@ -451,7 +532,7 @@ function pulseBeaconPts(a) {
 }
 
 function pulseBeaconImg(a) {
-  const orig = safeSColor(a.statusData?.status || 'none');
+  const orig = sColor(a.statusData?.status || 'none');
   let cnt = 0;
   const fl = setInterval(() => {
     cnt++;
