@@ -32,7 +32,11 @@ function applyBrightness(val) {
 
 function initMap() {
   map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.8039, 120.9647], 14);
-  tileLayer = buildTile(true).addTo(map);
+  // 修正：EMAP5（dark）圖磚覆蓋率/樣式不穩定，會拼出色塊花地圖；且原本疊了
+  // 兩層圖磚（EMAP + EMAP5）想保底，反而讓請求量變兩倍、加重卡頓。
+  // 改回單一標準 EMAP 圖層：覆蓋率完整、樣式穩定，且請求量維持最輕量。
+  // 想要偏暗視覺效果直接用亮度滑桿（下方 applyBrightness）調整即可，不需要疊圖層。
+  tileLayer = buildTile(false).addTo(map);
   L.control.zoom({ position: 'topright' }).addTo(map);
 
   // KEY FIX: remove tilePane filter during zoom to prevent GPU compositing tearing
