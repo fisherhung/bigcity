@@ -52,15 +52,19 @@ async function computeMileageStats() {
   const rows = pointAssets.map(({ id, a }) => {
     const km = _mileageAssetLengthKm(id);
     const person = _mileageExtractPerson(a.display_name || a.name || '');
-    return { id, name: a.display_name || a.name || '(未命名)', km, person };
+    const mmdd = getMMDD(a.display_name || a.name || ''); // 例如 "0814"，抓不到就是 null
+    return { id, name: a.display_name || a.name || '(未命名)', km, person, mmdd };
   }).sort((x, y) => y.km - x.km);
 
-  const byPerson = new Map();
+  const byPerson = new Map(); // person -> { km, days:Set }
   rows.forEach(r => {
-    byPerson.set(r.person, (byPerson.get(r.person) || 0) + r.km);
+    if (!byPerson.has(r.person)) byPerson.set(r.person, { km: 0, days: new Set() });
+    const rec = byPerson.get(r.person);
+    rec.km += r.km;
+    if (r.mmdd) rec.days.add(r.mmdd);
   });
   const personRows = Array.from(byPerson.entries())
-    .map(([person, km]) => ({ person, km }))
+    .map(([person, rec]) => ({ person, km: rec.km, days: rec.days.size }))
     .sort((x, y) => y.km - x.km);
 
   const totalKm = rows.reduce((s, r) => s + r.km, 0);
@@ -123,12 +127,18 @@ async function _mileageRender() {
     return;
   }
 
-  const personHtml = personRows.map(p => `
-    <div class="mileage-row">
-      <span class="mileage-row-name">${escHtml(p.person)}</span>
+  const personHtml = personRows.map(p => {
+    const avg = p.days > 0 ? (p.km / p.days).toFixed(2) : '-';
+    return `
+    <div class="mileage-row mileage-row-person">
+      <div class="mileage-row-main">
+        <span class="mileage-row-name">${escHtml(p.person)}</span>
+        <span class="mileage-row-meta">${p.days} 天・平均 ${avg} km/天</span>
+      </div>
       <span class="mileage-row-km">${p.km.toFixed(2)} km</span>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   const assetHtml = rows.map(r => `
     <div class="mileage-row mileage-row-sm">
