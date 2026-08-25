@@ -1570,4 +1570,8 @@
 .mileage-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mileage-row-km { font-family: 'JetBrains Mono', monospace; flex-shrink: 0; color: var(--accent); }
 
+.mileage-row-person { align-items: center; }
+.mileage-row-main { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.mileage-row-meta { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+
 .mileage-note { margin-top: 10px; font-size: 10px; color: var(--text-muted); line-height: 1.5; }
